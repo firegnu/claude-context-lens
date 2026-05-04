@@ -57,10 +57,12 @@ sed -n '1,220p' body-request-202605041115/session_diffs/timeline_diff.md
 
 ```text
 turn        当前 request 的逻辑序号
+meaning     对这一轮变化的人话解释
 messages    上一轮 messages 数 -> 当前 messages 数
-prefix      两轮从头开始完全相同的 message 数
-added       当前 request 从第一个不同点开始新增/替换出来的 message 数
-rewritten   上一轮从第一个不同点开始被替换掉的 message 数
+prefix      两轮从头开始语义相同的 message 数
+add         当前 request 从第一个不同点开始新增出来的 message 数
+rewrite     上一轮从第一个不同点开始被替换掉的 message 数
+meta        有多少条 message 只有 cache_control 等元数据变化
 system      system[] 是否变化
 tools       tools[] 是否变化
 request     当前 request 文件
@@ -69,19 +71,20 @@ request     当前 request 文件
 例子：
 
 ```text
-| 9 | 15->17 | 14 | 3 | 1 | same | same | ...
+| 10 | 工具循环推进：追加 assistant 调用 Read，再追加对应 tool_result。 | 17->19 | 17 | 2 | 0 | 1 | same | same | ...
 ```
 
 含义：
 
 ```text
-第 9 个 request 相比第 8 个 request：
-上一轮有 15 条 messages
-当前有 17 条 messages
-前 14 条完全相同
-从 message[14] 开始发生变化
-当前新增/替换出了 3 条 message
-上一轮尾部有 1 条 message 被替换
+第 10 个 request 相比第 9 个 request：
+上一轮有 17 条 messages
+当前有 19 条 messages
+前 17 条语义相同
+当前追加了 2 条 message
+上一轮没有语义 message 被替换
+有 1 条旧 message 只有 cache_control 等元数据变化
+这 2 条新增 message 是 assistant 发起 Read tool_use，然后 user 承载 tool_result
 system 没变
 tools 没变
 ```
@@ -541,4 +544,3 @@ jq '{system, tools, config}' body-request-202605041115/session_diffs/turns/0009.
 ```text
 messages.added 才是观察 Claude Code 每轮 context 编排的核心入口。
 ```
-

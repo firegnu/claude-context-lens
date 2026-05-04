@@ -39,6 +39,34 @@ def digest(value):
     return hashlib.sha256(stable_json(value).encode("utf-8")).hexdigest()
 
 
+def strip_ephemeral(value):
+    if isinstance(value, dict):
+        return {key: strip_ephemeral(item) for key, item in value.items() if key != "cache_control"}
+    if isinstance(value, list):
+        return [strip_ephemeral(item) for item in value]
+    return value
+
+
+def normalize_content_for_compare(content):
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    if isinstance(content, list):
+        return [strip_ephemeral(block) for block in content]
+    return content
+
+
+def normalize_message_for_compare(value):
+    if isinstance(value, dict) and "role" in value and "content" in value:
+        result = strip_ephemeral(value)
+        result["content"] = normalize_content_for_compare(value.get("content"))
+        return result
+    return strip_ephemeral(value)
+
+
+def semantic_digest(value):
+    return digest(normalize_message_for_compare(value))
+
+
 def preview(text, size=180):
     return text.replace("\n", "\\n")[:size]
 
@@ -71,6 +99,27 @@ def collect_ids(blocks, block_type, key):
     return values
 
 
+def block_preview(block):
+    if not isinstance(block, dict):
+        return ""
+    block_type = block.get("type")
+    if block_type == "text":
+        return block.get("text", "")
+    if block_type == "tool_use":
+        tool_input = block.get("input", {})
+        return f"{block.get('name', '<tool>')} {stable_json(tool_input)}"
+    if block_type == "tool_result":
+        content = block.get("content", "")
+        return content if isinstance(content, str) else stable_json(content)
+    return ""
+
+
+def content_preview(blocks, fallback_text):
+    parts = [block_preview(block) for block in blocks]
+    text = "\n".join(part for part in parts if part)
+    return preview(text or fallback_text)
+
+
 def message_summary(message, index):
     blocks = content_blocks(message.get("content"))
     text = text_from_content(message.get("content"))
@@ -78,11 +127,13 @@ def message_summary(message, index):
         "index": index,
         "role": message.get("role"),
         "hash": digest(message),
+        "semantic_hash": semantic_digest(message),
         "content_block_count": len(blocks),
         "content_types": [block.get("type") for block in blocks if isinstance(block, dict)],
         "text_chars": len(text),
-        "preview": preview(text),
+        "preview": content_preview(blocks, text),
         "tool_use_ids": collect_ids(blocks, "tool_use", "id"),
+        "tool_names": collect_ids(blocks, "tool_use", "name"),
         "tool_result_ids": collect_ids(blocks, "tool_result", "tool_use_id"),
     }
 
@@ -119,10 +170,10 @@ def diff_tools(previous, current):
     return {"changed": bool(added or removed or changed), "added": added, "removed": removed, "changed_names": changed}
 
 
-def common_prefix_count(previous_messages, current_messages):
+def common_prefix_count(previous_messages, current_messages, digest_func=semantic_digest):
     count = 0
     for old, new in zip(previous_messages, current_messages):
-        if digest(old) != digest(new):
+        if digest_func(old) != digest_func(new):
             break
         count += 1
     return count
@@ -130,16 +181,24 @@ def common_prefix_count(previous_messages, current_messages):
 
 def diff_messages(previous_messages, current_messages):
     prefix = common_prefix_count(previous_messages, current_messages)
+    raw_prefix = common_prefix_count(previous_messages, current_messages, digest)
     previous_tail = previous_messages[prefix:]
     current_tail = current_messages[prefix:]
     append_only = prefix == len(previous_messages) and len(current_messages) >= len(previous_messages)
+    metadata_only_indexes = [
+        index
+        for index in range(prefix)
+        if digest(previous_messages[index]) != digest(current_messages[index])
+    ]
     return {
         "previous_count": len(previous_messages),
         "current_count": len(current_messages),
         "common_prefix_count": prefix,
+        "raw_common_prefix_count": raw_prefix,
         "append_only": append_only,
         "added_count": len(current_tail),
         "removed_or_rewritten_count": len(previous_tail),
+        "metadata_only_changed_indexes": metadata_only_indexes,
         "reset_or_rewrite_suspected": not append_only and bool(previous_messages),
         "added": [message_summary(message, prefix + offset) for offset, message in enumerate(current_tail)],
         "removed_or_rewritten": [message_summary(message, prefix + offset) for offset, message in enumerate(previous_tail)],
@@ -162,6 +221,39 @@ def response_summary(session_dir, file_name):
         "content_types": [block.get("type") for block in blocks if isinstance(block, dict)],
         "usage": body.get("usage"),
     }
+
+
+def describe_added_message(summary):
+    content_types = summary["content_types"]
+    label = f"message[{summary['index']}] {summary['role']} {content_types}"
+    if "tool_use" in content_types and summary["tool_names"]:
+        label += f" -> call {', '.join(summary['tool_names'])}"
+    if "tool_result" in content_types and summary["tool_result_ids"]:
+        label += f" -> result for {', '.join(summary['tool_result_ids'])}"
+    if summary["preview"]:
+        label += f": {summary['preview']}"
+    return label
+
+
+def describe_message_flow(item):
+    messages = item["messages"]
+    added = messages["added"]
+    if messages["previous_count"] == 0:
+        return "初始化 context：放入第一批 messages。"
+    if messages["append_only"]:
+        if len(added) == 2 and added[0]["role"] == "assistant" and added[1]["role"] == "user":
+            first_types = added[0]["content_types"]
+            second_types = added[1]["content_types"]
+            if "tool_use" in first_types and "tool_result" in second_types:
+                tool = ", ".join(added[0]["tool_names"]) or "tool"
+                return f"工具循环推进：追加 assistant 调用 {tool}，再追加对应 tool_result。"
+        if added and added[-1]["role"] == "user" and "text" in added[-1]["content_types"]:
+            return "用户发出新消息：当前 request 在历史后追加了新的 user text。"
+        return "纯追加：当前 request 保留上一轮语义内容，并在尾部追加新 messages。"
+    if messages["metadata_only_changed_indexes"] and not messages["removed_or_rewritten"]:
+        count = len(messages["metadata_only_changed_indexes"])
+        return f"仅元数据变化：{count} 条 message 的 cache_control 等字段变化，语义内容不变。"
+    return "非纯追加：从 common_prefix 后开始出现语义替换、裁剪或分支变化。"
 
 
 def turn_diff(session_dir, order_item, previous_body, current_body):
@@ -194,26 +286,30 @@ def timeline_markdown(manifest):
         f"- session_dir: `{manifest['session_dir']}`",
         f"- turns: `{len(manifest['turn_diffs'])}`",
         "",
-        "| turn | messages | prefix | added | rewritten | system | tools | request |",
-        "|---:|---:|---:|---:|---:|---|---|---|",
+        "阅读顺序：先看 `meaning`，再看 `messages` 的计数。`prefix` 表示两轮从头开始语义相同的 message 数；`meta` 表示只有 `cache_control` 这类元数据变了。",
+        "",
+        "| turn | meaning | messages | prefix | add | rewrite | meta | system | tools | request |",
+        "|---:|---|---:|---:|---:|---:|---|---|---|---|",
     ]
     for item in manifest["turn_diffs"]:
         messages = item["messages"]
         lines.append(
-            "| {turn} | {prev}->{curr} | {prefix} | {added} | {rewritten} | {system} | {tools} | `{request}` |".format(
+            "| {turn} | {meaning} | {prev}->{curr} | {prefix} | {added} | {rewritten} | {meta} | {system} | {tools} | `{request}` |".format(
                 turn=item["index"],
+                meaning=describe_message_flow(item),
                 prev=messages["previous_count"],
                 curr=messages["current_count"],
                 prefix=messages["common_prefix_count"],
                 added=messages["added_count"],
                 rewritten=messages["removed_or_rewritten_count"],
+                meta=str(len(messages["metadata_only_changed_indexes"])) if messages["metadata_only_changed_indexes"] else "-",
                 system="changed" if item["system"]["changed"] else "same",
                 tools="changed" if item["tools"]["changed"] else "same",
                 request=item["request_file"],
             )
         )
         for added in messages["added"][:4]:
-            lines.append(f"  - added message[{added['index']}] `{added['role']}` `{added['content_types']}` {added['preview']}")
+            lines.append(f"  - {describe_added_message(added)}")
         if messages["added_count"] > 4:
             lines.append(f"  - ... {messages['added_count'] - 4} more added messages")
     return "\n".join(lines) + "\n"

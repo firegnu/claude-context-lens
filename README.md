@@ -321,10 +321,12 @@ session_diffs/
 `timeline_diff.md` 是人类可读总览。每一行展示：
 
 - turn 序号
+- `meaning`：对这一轮变化的人话解释，例如工具循环推进、用户新消息、非纯追加
 - `messages` 数量变化，例如 `15->17`
-- common prefix 数量
+- common prefix 数量，按语义内容比较，忽略 `cache_control`
 - 新增 message 数量
 - 被改写或删除的 message 数量
+- `meta`：只有 `cache_control` 等元数据变化的 message 数量
 - system 是否变化
 - tools 是否变化
 - request 文件名
@@ -365,11 +367,13 @@ session_diffs/
   "messages": {
     "previous_count": 1,
     "current_count": 3,
-    "common_prefix_count": 0,
-    "append_only": false,
-    "added_count": 3,
-    "removed_or_rewritten_count": 1,
-    "reset_or_rewrite_suspected": true,
+    "common_prefix_count": 1,
+    "raw_common_prefix_count": 0,
+    "append_only": true,
+    "added_count": 2,
+    "removed_or_rewritten_count": 0,
+    "metadata_only_changed_indexes": [0],
+    "reset_or_rewrite_suspected": false,
     "added": [],
     "removed_or_rewritten": []
   }
@@ -378,8 +382,10 @@ session_diffs/
 
 关键字段解释：
 
-- `common_prefix_count`：当前 request 和上一轮 request 从头开始有多少 message 完全相同。
+- `common_prefix_count`：当前 request 和上一轮 request 从头开始有多少 message 语义相同。比较时会忽略 `cache_control`，并把字符串 text 与 `[{type:"text"}]` 形式视为同一种文本消息。
+- `raw_common_prefix_count`：按原始 JSON 完全一致比较时的 common prefix。
 - `append_only`：是否只是单纯在上一轮 messages 后面追加。
+- `metadata_only_changed_indexes`：语义相同但原始 JSON 不同的 message 下标，通常是 `cache_control` 变化。
 - `added`：从第一个不同位置开始，当前 request 中新增/替换出来的 messages 摘要。
 - `removed_or_rewritten`：上一轮中从第一个不同位置开始，被当前 request 替换掉的 messages 摘要。
 - `reset_or_rewrite_suspected`：如果不是 append-only，就标记为 true。它不一定代表真正 compaction，也可能只是 tool_result 内容或 thinking 内容被重写。
