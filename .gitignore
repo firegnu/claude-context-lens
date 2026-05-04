@@ -1,0 +1,38 @@
+# macOS / editor noise
+.DS_Store
+*.swp
+*.swo
+
+# Python runtime artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Environment and secrets
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Claude Code raw body captures and generated analysis outputs
+*.request.json
+*.response.json
+run-*.log
+bodies-*/
+body-request-*/
+context_window_breakdown/
+session_request_order*/
+session_diffs*/
+
+# Generated archives / scratch
+*.zip
+*.tar
+*.tar.gz
+tmp/
+temp/
