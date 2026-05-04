@@ -150,6 +150,11 @@ class AnalyzeSessionDiffsCliTest(unittest.TestCase):
 
             self.assertIn("工具循环推进", story)
             self.assertIn("Read", turn_story)
+            self.assertIn("Context inserted into this request", story)
+            self.assertIn("Tool output inserted into this request", story)
+            self.assertIn("Previous LLM action inserted", turn_story)
+            self.assertIn("```text", turn_story)
+            self.assertIn("1\t# Demo", turn_story)
             self.assertTrue(any(event["event"] == "tool_use" and event["tool"] == "Read" for event in events))
             self.assertTrue(any(event["event"] == "tool_result" and event["tool_use_id"] == "toolu_123" for event in events))
 

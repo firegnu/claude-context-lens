@@ -75,8 +75,28 @@ def semantic_digest(value):
     return digest(normalize_message_for_compare(value))
 
 
+def clean_text(text):
+    return ANSI_RE.sub("", text)
+
+
 def preview(text, size=180):
-    return ANSI_RE.sub("", text).replace("\n", "\\n")[:size]
+    return clean_text(text).replace("\n", "\\n")[:size]
+
+
+def excerpt(text, max_chars=1200, max_lines=24):
+    text = clean_text(text)
+    lines = text.splitlines()
+    truncated = len(text) > max_chars or len(lines) > max_lines
+    if lines:
+        text = "\n".join(lines[:max_lines])
+    text = text[:max_chars]
+    if truncated:
+        text = text.rstrip() + "\n... <truncated>"
+    return text
+
+
+def short_excerpt(text):
+    return excerpt(text, max_chars=360, max_lines=10)
 
 
 def text_from_content(content):
@@ -122,10 +142,30 @@ def block_preview(block):
     return ""
 
 
+def block_excerpt(block):
+    if not isinstance(block, dict):
+        return ""
+    block_type = block.get("type")
+    if block_type == "text":
+        return block.get("text", "")
+    if block_type == "tool_use":
+        return block_preview(block)
+    if block_type == "tool_result":
+        content = block.get("content", "")
+        return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, indent=2)
+    return ""
+
+
 def content_preview(blocks, fallback_text):
     parts = [block_preview(block) for block in blocks]
     text = "\n".join(part for part in parts if part)
     return preview(text or fallback_text)
+
+
+def content_excerpt(blocks, fallback_text):
+    parts = [block_excerpt(block) for block in blocks]
+    text = "\n".join(part for part in parts if part)
+    return excerpt(text or fallback_text)
 
 
 def message_summary(message, index):
@@ -140,6 +180,7 @@ def message_summary(message, index):
         "content_types": [block.get("type") for block in blocks if isinstance(block, dict)],
         "text_chars": len(text),
         "preview": content_preview(blocks, text),
+        "excerpt": content_excerpt(blocks, text),
         "tool_use_ids": collect_ids(blocks, "tool_use", "id"),
         "tool_names": collect_ids(blocks, "tool_use", "name"),
         "tool_result_ids": collect_ids(blocks, "tool_result", "tool_use_id"),
@@ -386,10 +427,10 @@ def events_for_turn(item):
 
 def response_line(response):
     if not response:
-        return "- Response: not inferred"
+        return "- Current response after this request: not inferred"
     if response.get("missing"):
-        return f"- Response: missing `{response['file']}`"
-    return "- Response: `{file}`, stop_reason `{stop}`, content {types}".format(
+        return f"- Current response after this request: missing `{response['file']}`"
+    return "- Current response after this request: `{file}`, stop_reason `{stop}`, content {types}".format(
         file=response["file"],
         stop=response["stop_reason"],
         types=response["content_types"],
@@ -415,6 +456,64 @@ def stability_lines(item):
     ]
 
 
+def tool_use_by_id(summaries):
+    result = {}
+    for summary in summaries:
+        for tool_use_id in summary["tool_use_ids"]:
+            result[tool_use_id] = summary
+    return result
+
+
+def context_inserted_line(summary, tool_uses, include_preview=True):
+    content_types = summary["content_types"]
+    if "tool_use" in content_types:
+        tool = ", ".join(summary["tool_names"]) or "tool"
+        label = f"Previous LLM action inserted: assistant/tool_use `{tool}`"
+        return f"{label} -> {summary['preview']}" if include_preview else label
+    if "tool_result" in content_types:
+        tool_use_id = summary["tool_result_ids"][0] if summary["tool_result_ids"] else "<unknown>"
+        source = tool_uses.get(tool_use_id)
+        tool = f" from `{', '.join(source['tool_names'])}`" if source and source["tool_names"] else ""
+        label = f"Tool output inserted into this request: user/tool_result{tool} for `{tool_use_id}`"
+        return f"{label} -> {summary['preview']}" if include_preview else label
+    if summary["role"] == "user" and "text" in content_types:
+        label = "User text inserted into this request"
+        return f"{label}: {summary['preview']}" if include_preview else label
+    if summary["role"] == "assistant" and "text" in content_types:
+        label = "Assistant text inserted into this request"
+        return f"{label}: {summary['preview']}" if include_preview else label
+    return describe_added_message(summary)
+
+
+def context_inserted_block_lines(summary, tool_uses, short=False):
+    label = context_inserted_line(summary, tool_uses, include_preview=False)
+    lines = [f"- {label}"]
+    if summary.get("excerpt"):
+        content = short_excerpt(summary["excerpt"]) if short else summary["excerpt"]
+        lines.extend(["", "```text", content, "```"])
+    return lines
+
+
+def context_inserted_lines(added, limit=None):
+    selected = added[:limit] if limit else added
+    tool_uses = tool_use_by_id(added)
+    lines = [context_inserted_line(summary, tool_uses) for summary in selected]
+    if limit and len(added) > limit:
+        lines.append(f"... {len(added) - limit} more")
+    return lines
+
+
+def context_inserted_markdown_lines(added, limit=None, short=False):
+    selected = added[:limit] if limit else added
+    tool_uses = tool_use_by_id(added)
+    lines = []
+    for summary in selected:
+        lines.extend(context_inserted_block_lines(summary, tool_uses, short))
+    if limit and len(added) > limit:
+        lines.append(f"- ... {len(added) - limit} more")
+    return lines
+
+
 def turn_story_markdown(item):
     lines = [
         f"# Turn {item['index']:04d}",
@@ -425,11 +524,11 @@ def turn_story_markdown(item):
         response_line(item["response"]),
         *stability_lines(item),
         "",
-        "## Context Added",
+        "## Context Inserted Into This Request",
     ]
     added = item["messages"]["added"]
     if added:
-        lines.extend(f"- {describe_added_message(summary)}" for summary in added)
+        lines.extend(context_inserted_markdown_lines(added))
     else:
         lines.append("- None")
     if item["messages"]["removed_or_rewritten"]:
@@ -470,10 +569,8 @@ def session_story_markdown(manifest):
         )
         added = item["messages"]["added"]
         if added:
-            lines.append("- Context added:")
-            lines.extend(f"  - {describe_added_message(summary)}" for summary in added[:3])
-            if len(added) > 3:
-                lines.append(f"  - ... {len(added) - 3} more")
+            lines.append("- Context inserted into this request:")
+            lines.extend(context_inserted_markdown_lines(added, 3, short=True))
     return "\n".join(lines) + "\n"
 
 
