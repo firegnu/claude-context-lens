@@ -26,22 +26,59 @@ python3 scripts/analyze_session_diffs.py \
 ```text
 body-request-202605041115/session_diffs/
 ├── session_diff_manifest.json
+├── session_story.md
 ├── timeline_diff.md
+├── events.jsonl
 └── turns/
+    ├── 0001.md
     ├── 0001.json
+    ├── 0002.md
     ├── 0002.json
     └── ...
 ```
 
-## 第一步：先看总览
+## 第一步：先看 Story
 
 先打开：
+
+```text
+body-request-202605041115/session_diffs/session_story.md
+```
+
+或者用命令：
+
+```bash
+sed -n '1,220p' body-request-202605041115/session_diffs/session_story.md
+```
+
+`session_story.md` 是推荐主入口。它不要求你先理解 JSON diff 字段，而是直接按 agent loop 描述：
+
+```text
+Step 0005
+工具循环推进：追加 assistant 调用 Read，再追加对应 tool_result。
+Context added:
+  message[7] assistant tool_use Read ...
+  message[8] user tool_result ...
+```
+
+你应该先用它回答：
+
+```text
+这一轮 Claude Code 为什么又发了一次 request？
+这次 context window 新塞入了什么？
+模型这轮返回的是继续 tool_use，还是 end_turn？
+system/tools/config 有没有变化？
+```
+
+## 第二步：再看底层总览
+
+如果你想看压缩表格，再打开：
 
 ```text
 body-request-202605041115/session_diffs/timeline_diff.md
 ```
 
-或者用命令：
+或者：
 
 ```bash
 sed -n '1,220p' body-request-202605041115/session_diffs/timeline_diff.md
@@ -89,7 +126,17 @@ system 没变
 tools 没变
 ```
 
-## 第二步：打开某一轮的详细 JSON
+## 第三步：打开某一轮详情
+
+如果你想看第 9 轮的人类可读详情，打开：
+
+```text
+body-request-202605041115/session_diffs/turns/0009.md
+```
+
+它会列出这一轮的 transition、context added、events，以及 system/tools/config 是否稳定。
+
+如果你要看结构化证据，再打开 JSON：
 
 如果你想看第 9 轮，打开：
 
@@ -150,7 +197,7 @@ messages
   本轮和上一轮 messages[] 的结构化 diff。
 ```
 
-## 第三步：重点看 `messages`
+## 第四步：重点看 `messages`
 
 `messages` 是最重要的部分，因为 Claude Code harness 的主要动态变化都体现在这里。
 
@@ -225,7 +272,7 @@ message[0] 到 message[13] 在两轮 request 中完全一样
 3. 看 added，理解当前轮新增/替换进来了什么
 ```
 
-## 第四步：重点看 `added`
+## 第五步：重点看 `added`
 
 `added` 最能说明当前轮 Claude Code 加了什么上下文。
 
@@ -295,7 +342,7 @@ role=user + preview 以 <system-reminder> 开头
   => Claude Code 注入的 system-reminder 或动态上下文
 ```
 
-## 第五步：看 `removed_or_rewritten`
+## 第六步：看 `removed_or_rewritten`
 
 `removed_or_rewritten` 不是说内容一定被永久删除。它只是表示：
 
@@ -322,7 +369,7 @@ session reset 或分支请求
 
 就立刻判断发生了 compaction。它只是结构提示，需要结合 `added` 和 `removed_or_rewritten` 的内容看。
 
-## 第六步：看 system/tools/config 是否变化
+## 第七步：看 system/tools/config 是否变化
 
 在某个 `turns/000N.json` 里：
 

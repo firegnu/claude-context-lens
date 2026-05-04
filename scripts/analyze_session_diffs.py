@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 
 
@@ -14,6 +15,7 @@ CONFIG_KEYS = [
     "context_management",
     "output_config",
 ]
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def read_json(path):
@@ -28,6 +30,12 @@ def write_json(path, data):
 
 def write_text(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def write_jsonl(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows)
     path.write_text(text, encoding="utf-8")
 
 
@@ -68,7 +76,7 @@ def semantic_digest(value):
 
 
 def preview(text, size=180):
-    return text.replace("\n", "\\n")[:size]
+    return ANSI_RE.sub("", text).replace("\n", "\\n")[:size]
 
 
 def text_from_content(content):
@@ -315,6 +323,160 @@ def timeline_markdown(manifest):
     return "\n".join(lines) + "\n"
 
 
+def event_base(item, event, summary=None):
+    result = {
+        "turn": item["index"],
+        "event": event,
+        "request_file": item["request_file"],
+    }
+    if summary:
+        result.update(
+            {
+                "message_index": summary["index"],
+                "role": summary["role"],
+                "content_types": summary["content_types"],
+                "preview": summary["preview"],
+            }
+        )
+    return result
+
+
+def event_for_added_message(item, summary):
+    content_types = summary["content_types"]
+    if "tool_use" in content_types:
+        event = event_base(item, "tool_use", summary)
+        event["tool"] = summary["tool_names"][0] if summary["tool_names"] else None
+        event["tool_use_ids"] = summary["tool_use_ids"]
+        return event
+    if "tool_result" in content_types:
+        event = event_base(item, "tool_result", summary)
+        event["tool_use_id"] = summary["tool_result_ids"][0] if summary["tool_result_ids"] else None
+        return event
+    if summary["role"] == "user" and "text" in content_types:
+        return event_base(item, "user_text", summary)
+    if summary["role"] == "assistant" and "text" in content_types:
+        return event_base(item, "assistant_text", summary)
+    return event_base(item, "message_added", summary)
+
+
+def events_for_turn(item):
+    events = []
+    if item["config"]["changed"]:
+        events.append(event_base(item, "config_changed"))
+    if item["system"]["changed"]:
+        event = event_base(item, "system_changed")
+        event["changed_indexes"] = item["system"]["changed_indexes"]
+        events.append(event)
+    if item["tools"]["changed"]:
+        event = event_base(item, "tools_changed")
+        event["added"] = item["tools"]["added"]
+        event["removed"] = item["tools"]["removed"]
+        event["changed_names"] = item["tools"]["changed_names"]
+        events.append(event)
+    if item["messages"]["metadata_only_changed_indexes"]:
+        event = event_base(item, "metadata_only_changed")
+        event["message_indexes"] = item["messages"]["metadata_only_changed_indexes"]
+        events.append(event)
+    for summary in item["messages"]["removed_or_rewritten"]:
+        events.append(event_base(item, "message_removed_or_rewritten", summary))
+    for summary in item["messages"]["added"]:
+        events.append(event_for_added_message(item, summary))
+    return events
+
+
+def response_line(response):
+    if not response:
+        return "- Response: not inferred"
+    if response.get("missing"):
+        return f"- Response: missing `{response['file']}`"
+    return "- Response: `{file}`, stop_reason `{stop}`, content {types}".format(
+        file=response["file"],
+        stop=response["stop_reason"],
+        types=response["content_types"],
+    )
+
+
+def stability_lines(item):
+    messages = item["messages"]
+    return [
+        "- Stable context: system {system}, tools {tools}, config {config}".format(
+            system="changed" if item["system"]["changed"] else "same",
+            tools="changed" if item["tools"]["changed"] else "same",
+            config="changed" if item["config"]["changed"] else "same",
+        ),
+        "- Message shape: {prev}->{curr}, prefix {prefix}, add {added}, rewrite {rewrite}, meta {meta}".format(
+            prev=messages["previous_count"],
+            curr=messages["current_count"],
+            prefix=messages["common_prefix_count"],
+            added=messages["added_count"],
+            rewrite=messages["removed_or_rewritten_count"],
+            meta=len(messages["metadata_only_changed_indexes"]),
+        ),
+    ]
+
+
+def turn_story_markdown(item):
+    lines = [
+        f"# Turn {item['index']:04d}",
+        "",
+        f"- Request: `{item['request_file']}`",
+        f"- Previous request: `{item['previous_request_file'] or '<none>'}`",
+        f"- What happened: {describe_message_flow(item)}",
+        response_line(item["response"]),
+        *stability_lines(item),
+        "",
+        "## Context Added",
+    ]
+    added = item["messages"]["added"]
+    if added:
+        lines.extend(f"- {describe_added_message(summary)}" for summary in added)
+    else:
+        lines.append("- None")
+    if item["messages"]["removed_or_rewritten"]:
+        lines.extend(["", "## Removed Or Rewritten"])
+        lines.extend(f"- {describe_added_message(summary)}" for summary in item["messages"]["removed_or_rewritten"])
+    events = events_for_turn(item)
+    lines.extend(["", "## Events"])
+    if events:
+        for event in events:
+            label = event["event"]
+            detail = event.get("tool") or event.get("tool_use_id") or event.get("preview") or ""
+            lines.append(f"- `{label}` {preview(str(detail), 140)}".rstrip())
+    else:
+        lines.append("- None")
+    return "\n".join(lines) + "\n"
+
+
+def session_story_markdown(manifest):
+    lines = [
+        "# Session Story",
+        "",
+        f"- session_dir: `{manifest['session_dir']}`",
+        f"- turns: `{len(manifest['turn_diffs'])}`",
+        "",
+        "这个文件按 agent loop 讲述每一轮比上一轮多了什么。需要底层字段时，再回看 `timeline_diff.md` 或 `turns/*.json`。",
+    ]
+    for item in manifest["turn_diffs"]:
+        lines.extend(
+            [
+                "",
+                f"## Step {item['index']:04d}",
+                "",
+                f"- {describe_message_flow(item)}",
+                f"- Request: `{item['request_file']}`",
+                response_line(item["response"]),
+                *stability_lines(item),
+            ]
+        )
+        added = item["messages"]["added"]
+        if added:
+            lines.append("- Context added:")
+            lines.extend(f"  - {describe_added_message(summary)}" for summary in added[:3])
+            if len(added) > 3:
+                lines.append(f"  - ... {len(added) - 3} more")
+    return "\n".join(lines) + "\n"
+
+
 def analyze(session_dir, order_path, out_dir):
     order = read_json(order_path)
     turn_diffs = []
@@ -328,6 +490,7 @@ def analyze(session_dir, order_path, out_dir):
         diff = turn_diff(session_dir, enriched_item, previous_body, current_body)
         turn_diffs.append(diff)
         write_json(out_dir / "turns" / f"{item['index']:04d}.json", diff)
+        write_text(out_dir / "turns" / f"{item['index']:04d}.md", turn_story_markdown(diff))
         previous_body = current_body
         previous_file = request_file
     manifest = {
@@ -337,6 +500,8 @@ def analyze(session_dir, order_path, out_dir):
     }
     write_json(out_dir / "session_diff_manifest.json", manifest)
     write_text(out_dir / "timeline_diff.md", timeline_markdown(manifest))
+    write_text(out_dir / "session_story.md", session_story_markdown(manifest))
+    write_jsonl(out_dir / "events.jsonl", [event for item in turn_diffs for event in events_for_turn(item)])
     print(f"Wrote session diffs to {out_dir}")
 
 

@@ -311,12 +311,37 @@ python3 scripts/analyze_session_diffs.py \
 ```text
 session_diffs/
 ├── session_diff_manifest.json
+├── session_story.md
 ├── timeline_diff.md
+├── events.jsonl
 └── turns/
     ├── 0001.json
+    ├── 0001.md
     ├── 0002.json
+    ├── 0002.md
     └── ...
 ```
+
+`session_story.md` 是推荐的主阅读入口。它把底层 JSON diff 转换成 agent loop 叙事：
+
+- 这一轮发生了什么，例如工具循环推进、用户新消息、非纯追加。
+- 当前 request 文件和本轮 response 摘要。
+- system/tools/config 是否稳定。
+- 本轮 context window 新增了哪些 message。
+- 如果有 tool_use/tool_result，会直接显示工具名、输入预览和结果预览。
+
+`events.jsonl` 是机器可分析事件流，每行一个事件，常见事件包括：
+
+- `tool_use`
+- `tool_result`
+- `user_text`
+- `assistant_text`
+- `metadata_only_changed`
+- `message_removed_or_rewritten`
+- `system_changed`
+- `tools_changed`
+
+`turns/000N.md` 是单轮人类可读详情；`turns/000N.json` 是同一轮的结构化证据。
 
 `timeline_diff.md` 是人类可读总览。每一行展示：
 
@@ -418,7 +443,14 @@ Claude Code 是否在某些轮次注入了 suggestion mode 或其他特殊消息
 常用查看命令：
 
 ```bash
+sed -n '1,220p' body-request-202605041115/session_diffs/session_story.md
+
 sed -n '1,220p' body-request-202605041115/session_diffs/timeline_diff.md
+
+sed -n '1,120p' body-request-202605041115/session_diffs/turns/0009.md
+
+jq -r 'select(.event=="tool_use") | [.turn, .tool, .preview] | @tsv' \
+  body-request-202605041115/session_diffs/events.jsonl
 
 jq '.turn_diffs[] | {index, request_file, system_changed:.system.changed, tools_changed:.tools.changed, messages:.messages | {previous_count, current_count, common_prefix_count, added_count, removed_or_rewritten_count, reset_or_rewrite_suspected}}' \
   body-request-202605041115/session_diffs/session_diff_manifest.json
