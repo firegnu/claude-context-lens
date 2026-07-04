@@ -156,6 +156,42 @@ class ExtractContextWindowCliTest(unittest.TestCase):
             self.assertNotIn("\\u001b", rendered)
             self.assertNotIn('"content"', rendered)
 
+    def test_string_message_content_is_rendered_as_text(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tmp = Path(temp_dir)
+            request_path = tmp / "sample.request.json"
+            out_path = tmp / "breakdown"
+
+            write_json(
+                request_path,
+                {
+                    "model": "claude-test",
+                    "max_tokens": 42,
+                    "stream": True,
+                    "system": [],
+                    "messages": [
+                        {"role": "user", "content": "just a plain string"}
+                    ],
+                    "tools": [],
+                },
+            )
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--request",
+                    str(request_path),
+                    "--out",
+                    str(out_path),
+                ],
+                check=True,
+            )
+
+            rendered = (out_path / "02_messages" / "message_00_content_00.md").read_text(encoding="utf-8")
+            self.assertIn("- role: `user`", rendered)
+            self.assertIn("just a plain string", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

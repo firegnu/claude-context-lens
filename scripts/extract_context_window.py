@@ -154,7 +154,10 @@ def extract(request_path, response_path, out_path):
 
     messages = request.get("messages", [])
     for message_index, message in enumerate(messages):
-        for block_index, block in enumerate(message.get("content", [])):
+        content = message.get("content", [])
+        if isinstance(content, str):
+            content = [{"type": "text", "text": content}]
+        for block_index, block in enumerate(content):
             body = text_of(block)
             file_path = out_path / "02_messages" / f"message_{message_index:02d}_content_{block_index:02d}.md"
             dump_markdown_block(
