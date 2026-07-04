@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REQUEST = ROOT / "9885e4e6-a4c1-4ced-ac0e-3371a9e13138.request.json"
 RESPONSE = ROOT / "req_011Caggp8Nn13XNpRjzADwVM.response.json"
 OUT = ROOT / "context_window_breakdown"
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def read_json(path):
@@ -31,8 +32,20 @@ def slug(text):
     return cleaned[:80] or "unnamed"
 
 
+def clean_text(text):
+    return ANSI_RE.sub("", text)
+
+
 def text_of(block):
-    return block.get("text", "") if block.get("type") == "text" else json.dumps(block, ensure_ascii=False)
+    block_type = block.get("type")
+    if block_type == "text":
+        return block.get("text", "")
+    if block_type == "tool_result":
+        content = block.get("content", "")
+        if isinstance(content, str):
+            return clean_text(content)
+        return json.dumps(content, ensure_ascii=False, indent=2)
+    return json.dumps(block, ensure_ascii=False)
 
 
 def preview(text, size=160):
@@ -45,6 +58,22 @@ def dump_markdown_block(path, title, meta, body):
         lines.append(f"- {key}: `{value}`")
     lines.extend(["", "```text", body, "```", ""])
     write_text(path, "\n".join(lines))
+
+
+def content_meta(block, source, role, index):
+    meta = {
+        "source": source,
+        "role": role,
+        "index": index,
+        "type": block.get("type"),
+    }
+    if block.get("type") == "tool_use":
+        meta["tool_use_id"] = block.get("id")
+        meta["tool_name"] = block.get("name")
+    if block.get("type") == "tool_result":
+        meta["tool_use_id"] = block.get("tool_use_id")
+        meta["is_error"] = block.get("is_error")
+    return meta
 
 
 def path_string(path):
@@ -131,13 +160,7 @@ def extract(request_path, response_path, out_path):
             dump_markdown_block(
                 file_path,
                 f"Message {message_index} Content Block {block_index}",
-                {
-                    "source": f"request.messages[{message_index}].content",
-                    "role": message.get("role"),
-                    "index": block_index,
-                    "type": block.get("type"),
-                    "chars": len(body),
-                },
+                {**content_meta(block, f"request.messages[{message_index}].content", message.get("role"), block_index), "chars": len(body)},
                 body,
             )
             manifest["sections"].append(

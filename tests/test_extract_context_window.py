@@ -108,6 +108,54 @@ class ExtractContextWindowCliTest(unittest.TestCase):
             self.assertIsNone(manifest["response"])
             self.assertFalse((out_path / "04_response").exists())
 
+    def test_tool_result_content_is_rendered_as_decoded_text(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tmp = Path(temp_dir)
+            request_path = tmp / "sample.request.json"
+            out_path = tmp / "breakdown"
+
+            write_json(
+                request_path,
+                {
+                    "model": "claude-test",
+                    "max_tokens": 42,
+                    "stream": True,
+                    "system": [],
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": "toolu_123",
+                                    "content": "\u001b[1mMakefile\u001b[0m\nREADME.md\nsrc",
+                                    "is_error": False,
+                                }
+                            ],
+                        }
+                    ],
+                    "tools": [],
+                },
+            )
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--request",
+                    str(request_path),
+                    "--out",
+                    str(out_path),
+                ],
+                check=True,
+            )
+
+            rendered = (out_path / "02_messages" / "message_00_content_00.md").read_text(encoding="utf-8")
+            self.assertIn("- tool_use_id: `toolu_123`", rendered)
+            self.assertIn("Makefile\nREADME.md\nsrc", rendered)
+            self.assertNotIn("\\u001b", rendered)
+            self.assertNotIn('"content"', rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
