@@ -1,5 +1,6 @@
 import argparse
 import shutil
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -16,9 +17,10 @@ def _now_iso():
     return datetime.now().astimezone().isoformat()
 
 
-def _cmd_run(args):
-    session_dir = run_session(args.claude_args, session_id=_timestamp(), captured_at=_now_iso())
+def _cmd_run(claude_args):
+    session_dir, returncode = run_session(claude_args, session_id=_timestamp(), captured_at=_now_iso())
     print(f"Captured session at {session_dir}")
+    return returncode
 
 
 def _cmd_ingest(args):
@@ -34,12 +36,19 @@ def _cmd_ingest(args):
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+
+    # `run` takes arbitrary claude args (including dash-prefixed ones like `-p`),
+    # which argparse's subparser machinery can't pass through unmangled. Peel it
+    # off before argparse ever sees it and route everything after it verbatim.
+    if argv and argv[0] == "run":
+        claude_args = argv[1:]
+        if claude_args and claude_args[0] == "--":
+            claude_args = claude_args[1:]
+        return _cmd_run(claude_args)
+
     parser = argparse.ArgumentParser(prog="claude-lens")
     sub = parser.add_subparsers(dest="cmd", required=True)
-
-    run_parser = sub.add_parser("run", help="Launch claude with capture; ingest on exit")
-    run_parser.add_argument("claude_args", nargs=argparse.REMAINDER)
-    run_parser.set_defaults(func=_cmd_run)
 
     ingest_parser = sub.add_parser("ingest", help="Ingest an existing raw bodies dir")
     ingest_parser.add_argument("raw_dir", type=Path)
@@ -48,8 +57,8 @@ def main(argv=None):
     ingest_parser.set_defaults(func=_cmd_ingest)
 
     args = parser.parse_args(argv)
-    args.func(args)
+    return args.func(args)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

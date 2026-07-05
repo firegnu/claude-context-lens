@@ -26,10 +26,12 @@ def _load_responses(raw_dir):
 
 def _load_requests(raw_dir, responses):
     requests = []
+    corrupt = []
     for path in sorted(raw_dir.glob("*.request.json")):
         try:
             body = read_json(path)
         except (ValueError, OSError):
+            corrupt.append(path.name)
             continue
         prev = _previous_message_id(body)
         requests.append({
@@ -39,7 +41,7 @@ def _load_requests(raw_dir, responses):
             "previous_message_id": prev,
             "previous_response_file": responses.get(prev, {}).get("file"),
         })
-    return requests
+    return requests, corrupt
 
 
 def _sort_key(item):
@@ -60,7 +62,8 @@ def _confidence(item, index):
 def link_requests(raw_dir):
     raw_dir = Path(raw_dir)
     responses, response_files = _load_responses(raw_dir)
-    ordered = sorted(_load_requests(raw_dir, responses), key=_sort_key)
+    requests, corrupt_requests = _load_requests(raw_dir, responses)
+    ordered = sorted(requests, key=_sort_key)
 
     for index, item in enumerate(ordered):
         item["index"] = index
@@ -80,4 +83,10 @@ def link_requests(raw_dir):
         {"request_file": item["request_file"], "reason": item["order_confidence"]}
         for item in ordered if item["order_confidence"].startswith(("medium", "low"))
     ]
-    return {"ordered": ordered, "responses": response_files, "ambiguities": ambiguities}
+    ambiguities.extend({"request_file": name, "reason": "corrupt"} for name in corrupt_requests)
+    ambiguities.extend(
+        {"response_file": r["file"], "reason": "corrupt"} for r in response_files if r.get("corrupt")
+    )
+
+    valid_responses = [r for r in response_files if not r.get("corrupt")]
+    return {"ordered": ordered, "responses": valid_responses, "ambiguities": ambiguities}

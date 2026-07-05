@@ -27,10 +27,32 @@ class RunSessionTest(unittest.TestCase):
                 (raw / "a.request.json").write_text(
                     json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}]}), encoding="utf-8")
 
-            sd = launcher.run_session(
+            sd, returncode = launcher.run_session(
                 ["-p", "hi"], session_id="20260101-000000",
                 captured_at="2026-01-01T00:00:00Z", root=root,
                 base_env={"PATH": "/usr/bin"}, runner=fake_runner)
 
             self.assertTrue((sd / "session.json").exists())
             self.assertEqual(sd, root / "20260101-000000")
+            self.assertEqual(returncode, 0)
+
+
+class RunSessionKeyboardInterruptTest(unittest.TestCase):
+    def test_ingests_on_keyboard_interrupt_and_propagates(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+
+            def fake_runner(cmd, env):
+                raw = Path(env["OTEL_LOG_RAW_API_BODIES"][len("file:"):])
+                (raw / "a.request.json").write_text(
+                    json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}]}), encoding="utf-8")
+                raise KeyboardInterrupt
+
+            with self.assertRaises(KeyboardInterrupt):
+                launcher.run_session(
+                    ["-p", "hi"], session_id="20260101-000001",
+                    captured_at="2026-01-01T00:00:00Z", root=root,
+                    base_env={"PATH": "/usr/bin"}, runner=fake_runner)
+
+            sd = root / "20260101-000001"
+            self.assertTrue((sd / "session.json").exists())

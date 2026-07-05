@@ -676,8 +676,5 @@ claude-lens ingest ~/claude-otel/bodies-YYYYMMDD-HHMMSS \
 所有测试都使用 Python 标准库 `unittest`，不需要安装 pytest。
 
 ```bash
-python3 -m unittest \
-  tests.test_extract_context_window \
-  tests.test_analyze_session_requests \
-  tests.test_analyze_session_diffs
+python3 -m unittest discover tests -v
 ```

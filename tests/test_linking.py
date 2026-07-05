@@ -40,3 +40,13 @@ class LinkRequestsTest(unittest.TestCase):
             (raw / "bad.request.json").write_text("{not json", encoding="utf-8")
             result = linking.link_requests(raw)
             self.assertEqual(len(result["ordered"]), 2)
+            self.assertIn({"request_file": "bad.request.json", "reason": "corrupt"}, result["ambiguities"])
+
+    def test_corrupt_response_file_is_ambiguity_and_excluded_from_responses(self):
+        with tempfile.TemporaryDirectory() as d:
+            raw = self._raw(d)
+            (raw / "bad.response.json").write_text("{not json", encoding="utf-8")
+            result = linking.link_requests(raw)
+            self.assertIn({"response_file": "bad.response.json", "reason": "corrupt"}, result["ambiguities"])
+            self.assertNotIn("bad.response.json", [r["file"] for r in result["responses"]])
+            self.assertEqual(len(result["responses"]), 2)
