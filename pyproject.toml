@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-context-lens"
+version = "0.1.0"
+description = "Capture and inspect Claude Code context windows"
+requires-python = ">=3.10"
+
+[project.scripts]
+claude-lens = "claude_lens.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["claude_lens*"]
