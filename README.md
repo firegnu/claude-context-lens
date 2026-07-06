@@ -22,6 +22,8 @@ python3 -m claude_lens.cli ingest ~/claude-otel/bodies-YYYYMMDD-HHMMSS --session
 
 # 2) 打开 macOS app 浏览（需 macOS 14+，无第三方依赖）
 cd macos-app && swift run ContextLensApp
+#    或打包成可双击 app（装进 ~/Applications，Spotlight/双击即开）：
+macos-app/scripts/make-app.sh
 ```
 
 app 里：左栏选 session → 中栏展开 **回合 → 请求** → 右栏「构成」看每个 req 的 context window 组成、「变化」看相邻轮 diff。
