@@ -32,3 +32,19 @@ class SegmentTurnsTest(unittest.TestCase):
         self.assertEqual(result[1]["request_indices"], [2])
         self.assertEqual(result[0]["user_message_preview"], "do X")
         self.assertEqual(result[1]["user_message_preview"], "now Y")
+
+    def test_is_sidechannel_detects_suggestion_mode(self):
+        self.assertTrue(turns.is_sidechannel(
+            {"messages": [_user_text("[SUGGESTION MODE: Suggest what the user might type]")]}))
+        self.assertFalse(turns.is_sidechannel({"messages": [_user_text("real question")]}))
+
+    def test_sidechannel_request_excluded_from_turns(self):
+        bodies = [
+            {"messages": [_user_text("do X")]},
+            {"messages": [_user_text("do X"),
+                          {"role": "assistant", "content": [{"type": "text", "text": "..."}]},
+                          _user_text("[SUGGESTION MODE: suggest next]")]},
+        ]
+        result = turns.segment_turns(bodies)
+        self.assertEqual([t["index"] for t in result], [0])
+        self.assertEqual(result[0]["request_indices"], [0])

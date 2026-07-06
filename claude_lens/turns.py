@@ -1,3 +1,9 @@
+# Claude Code fires background requests (e.g. autocomplete "suggestions") that
+# inject a marker prompt as the final user message. They use the same model as
+# real turns, so the injected text is the only reliable signal.
+SIDECHANNEL_MARKERS = ("[SUGGESTION MODE",)
+
+
 def _is_real_user_message(message):
     if message.get("role") != "user":
         return False
@@ -26,9 +32,15 @@ def last_real_user_text(request_body):
     return text
 
 
+def is_sidechannel(request_body):
+    return last_real_user_text(request_body).lstrip().startswith(SIDECHANNEL_MARKERS)
+
+
 def segment_turns(request_bodies):
     turns = []
     for index, body in enumerate(request_bodies):
+        if is_sidechannel(body):
+            continue
         turn_index = max(real_user_message_count(body) - 1, 0)
         if not turns or turns[-1]["index"] != turn_index:
             preview = last_real_user_text(body)[:120].replace("\n", " ")

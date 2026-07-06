@@ -3,7 +3,7 @@ from pathlib import Path
 from .contract import read_json, write_json, validate_session
 from .breakdown import build_breakdown
 from .linking import link_requests
-from .turns import segment_turns
+from .turns import segment_turns, is_sidechannel
 
 
 def ingest_session(session_dir, captured_at, launcher_argv):
@@ -30,6 +30,7 @@ def ingest_session(session_dir, captured_at, launcher_argv):
             "breakdown": f"derived/{bd_name}",
             "previous_message_id": item["previous_message_id"],
             "order_confidence": item["order_confidence"],
+            "is_sidechannel": is_sidechannel(request_bodies[index]),
             "usage": bd["usage"],
             "totals": {
                 "system_chars": bd["totals"]["system_chars"],
@@ -38,21 +39,26 @@ def ingest_session(session_dir, captured_at, launcher_argv):
             },
         })
 
+    # segment_turns already skips side-channel requests; collect them into a
+    # separate top-level list so they don't masquerade as conversation turns.
     turns = segment_turns(request_bodies)
     for turn in turns:
         turn["requests"] = [requests_meta[i] for i in turn.pop("request_indices")]
+    sidechannel = [meta for meta in requests_meta if meta["is_sidechannel"]]
 
     session = {
         "session_id": session_dir.name,
         "captured_at": captured_at,
         "launcher_argv": launcher_argv,
         "model": request_bodies[0].get("model") if request_bodies else None,
-        "counts": {"turns": len(turns), "requests": len(ordered), "responses": len(linked["responses"])},
+        "counts": {"turns": len(turns), "requests": len(ordered),
+                   "responses": len(linked["responses"]), "sidechannel": len(sidechannel)},
         "turns": turns,
+        "sidechannel": sidechannel,
         "ambiguities": linked["ambiguities"],
     }
 
     problems = validate_session(session)
-    session["ambiguities"].extend({"reason": "schema", "detail": p} for p in problems)
+    session["ambiguities"].extend({"kind": "schema", "file": None, "detail": p} for p in problems)
     write_json(session_dir / "session.json", session)
     return session

@@ -35,6 +35,25 @@ class IngestSessionTest(unittest.TestCase):
             self.assertTrue((sd / "derived" / "req-000.breakdown.json").exists())
             self.assertTrue((sd / "session.json").exists())
 
+    def test_sidechannel_request_separated_and_flagged(self):
+        with tempfile.TemporaryDirectory() as d:
+            sd = Path(d) / "sc"
+            raw = sd / "raw"
+            _write(raw / "a.request.json", {"model": "claude-x", "system": [],
+                                            "messages": [{"role": "user", "content": "real"}], "tools": []})
+            _write(raw / "s.request.json", {"model": "claude-x", "system": [],
+                                            "messages": [{"role": "user", "content": "[SUGGESTION MODE: next]"}],
+                                            "tools": []})
+            session = ingest.ingest_session(sd, captured_at="t", launcher_argv=["claude"])
+            self.assertEqual(contract.validate_session(session), [])
+            self.assertEqual(session["counts"]["sidechannel"], 1)
+            self.assertEqual(len(session["sidechannel"]), 1)
+            self.assertTrue(session["sidechannel"][0]["is_sidechannel"])
+            self.assertEqual(session["sidechannel"][0]["raw_request"], "raw/s.request.json")
+            turn_reqs = [r for t in session["turns"] for r in t["requests"]]
+            self.assertEqual([r["raw_request"] for r in turn_reqs], ["raw/a.request.json"])
+            self.assertTrue(all(not r["is_sidechannel"] for r in turn_reqs))
+
     def test_empty_session_is_valid(self):
         with tempfile.TemporaryDirectory() as d:
             sd = Path(d) / "empty"

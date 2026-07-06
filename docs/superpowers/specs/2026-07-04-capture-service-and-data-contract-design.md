@@ -87,7 +87,7 @@
   "captured_at": "2026-07-04T21:05:26Z",     // ISO 8601;由启动器在启动时刻写入
   "launcher_argv": ["claude", "..."],        // 启动器实际透传的参数
   "model": "claude-opus-4-8",
-  "counts": { "turns": 3, "requests": 8, "responses": 8 },
+  "counts": { "turns": 3, "requests": 8, "responses": 8, "sidechannel": 2 },
   "turns": [
     {
       "index": 0,
@@ -96,17 +96,24 @@
         {
           "index": 0,
           "raw_request":  "raw/42c8….request.json",
-          "raw_response": "raw/req_011C….response.json",
+          "raw_response": "raw/req_011C….response.json",  // 可为 null(响应缺失/损坏)
           "breakdown":    "derived/req-000.breakdown.json",
           "previous_message_id": null,
           "order_confidence": "high:start",   // 复用现有 confidence 分级
-          "usage":  { "input_tokens": 10570, "cache_read_input_tokens": 15298, "output_tokens": 4 },
+          "is_sidechannel": false,            // 真实对话回合里恒为 false
+          "usage":  { "input_tokens": 10570, "cache_read_input_tokens": 15298, "output_tokens": 4 },  // 可为 null
           "totals": { "system_chars": 7068, "message_chars": 33607, "tool_chars": 39053 }
         }
       ]
     }
   ],
-  "ambiguities": []   // 排序/配对存疑之处——显式暴露,不静默吞掉
+  "sidechannel": [ /* 旁路请求(见下)的 meta,形状同 turns[].requests[],不进 turns */ ],
+  "ambiguities": [   // 排序/配对存疑之处——显式暴露,不静默吞掉;统一形状 { kind, file, detail }
+    { "kind": "order",            "file": "42c8….request.json",  "detail": "medium:null-prev" },
+    { "kind": "corrupt-request",  "file": "…….request.json",     "detail": null },
+    { "kind": "corrupt-response", "file": "…….response.json",    "detail": null },
+    { "kind": "schema",           "file": null,                  "detail": "turn 0 request missing usage" }
+  ]
 }
 ```
 
@@ -114,17 +121,23 @@
 
 注:请求项里的 `usage` / `totals` 是**摘要**(供 app 列表直接展示),完整明细在对应的 `breakdown.json`(见 5.2)。`totals.tool_chars` 是「工具描述 + schema」字符数的合计;`breakdown.json` 里拆成 `tool_description_chars` 与 `tool_schema_chars` 两项。
 
+**旁路请求(`sidechannel[]`)**:Claude Code 会在后台发一些非对话请求(如「建议下一句」自动补全,注入 `[SUGGESTION MODE …]` 标记的用户消息)。它们与真实回合**同模型**,只能靠注入文本识别。这类请求**不进 `turns[]`**(否则会伪装成用户回合、甚至挤掉真实回合),而是单独收进 `sidechannel[]` 并标 `is_sidechannel: true`,数据不丢、由 app 决定是否展示。识别标记见 `turns.SIDECHANNEL_MARKERS`。
+
+**ambiguities `kind` 取值**:`order`(排序/配对存疑,`detail` = order_confidence)/ `corrupt-request` / `corrupt-response`(`detail` = null)/ `schema`(`file` = null,`detail` = 校验问题描述)。`file` 为相对 `raw/` 的文件名或 null。
+
 ### 5.2 `derived/req-NNN.breakdown.json`(单次请求拆解)
 
 由现有 `extract_context_window.py` 的产物演进为**一份 JSON**(而非一堆 `.md`),字段:
 
 - `request_config`:model / max_tokens / stream / thinking / betas / context_management / output_config / metadata / diagnostics。
 - `system[]`:每个 system 块的 type / text / cache_control / 字符数。
-- `messages[]`:每条消息的每个 content block —— role / type / 解码后正文;`tool_use` 带 id、name;`tool_result` 带 tool_use_id、is_error(ANSI 已剥离)。
+- `messages[]`:每条消息的每个 content block —— role / type / 解码后正文;`tool_use` 带 id、name;`tool_result` 带 tool_use_id、is_error(ANSI 已剥离);`thinking`/`redacted_thinking` 带 `available: false`、`text: ""`、`chars: 0`(见下)。
 - `tools[]`:每个工具的 name / description / input_schema。
-- `response`:响应内容块。
-- `usage`:响应的 token 账单原样保留。
+- `response`:响应内容块(同上,thinking 块带 `available: false`)。
+- `usage`:响应的 token 账单原样保留(响应缺失时为 null)。
 - `totals`:system / message / tool 描述 / tool schema 的字符数汇总。
+
+**硬约束:thinking 正文不可采集。** Claude Code 的遥测层在写 `OTEL_LOG_RAW_API_BODIES` 前**无条件**把 thinking 抹成 `<REDACTED>`(源码 `uql()`,请求历史侧与响应侧都抹;无任何 env 开关保留)。故 breakdown 里 `thinking`/`redacted_thinking` 块一律标 `available: false`、正文置空、`chars: 0`(不把残留的 base64 signature 计入字符数)。app 应据此渲染「此处思考过、内容不可得」的占位。想拿到 thinking 正文只能改用「claude↔API 之间架网络代理」的另一套采集架构(不在本方案内)。
 
 ### 5.3 两个由现有代码支撑的机制
 

@@ -40,3 +40,30 @@ class BuildBreakdownTest(unittest.TestCase):
         self.assertEqual(bd["usage"], {"input_tokens": 5})
         self.assertEqual(bd["response"][0]["text"], "pong")
         self.assertEqual(bd["request_config"]["betas"], ["b-2025-01-01"])
+
+    def test_thinking_block_in_response_is_marked_unavailable(self):
+        # Claude Code redacts thinking in telemetry; we must not leak the base64
+        # signature into chars, and must flag the content as unavailable.
+        resp = {"content": [
+            {"type": "thinking", "thinking": "<REDACTED>", "signature": "EpcGCmMIDxgC" * 40},
+            {"type": "text", "text": "hi"},
+        ]}
+        bd = breakdown.build_breakdown(self._request(), resp)
+        thinking = bd["response"][0]
+        self.assertEqual(thinking["type"], "thinking")
+        self.assertFalse(thinking["available"])
+        self.assertEqual(thinking["chars"], 0)
+        self.assertEqual(thinking["text"], "")
+        self.assertEqual(bd["response"][1]["text"], "hi")
+
+    def test_thinking_block_in_message_does_not_inflate_message_chars(self):
+        req = self._request()
+        req["messages"].append({"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "<REDACTED>", "signature": "x" * 500},
+        ]})
+        bd = breakdown.build_breakdown(req, None)
+        msg = bd["messages"][-1]
+        self.assertEqual(msg["type"], "thinking")
+        self.assertFalse(msg["available"])
+        self.assertEqual(msg["chars"], 0)
+        self.assertEqual(msg["text"], "")

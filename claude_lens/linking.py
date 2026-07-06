@@ -80,12 +80,13 @@ def link_requests(raw_dir):
         ordered[-1]["inferred_response_file"] = max(leftover, key=lambda r: r["mtime_ns"])["file"]
 
     ambiguities = [
-        {"request_file": item["request_file"], "reason": item["order_confidence"]}
+        {"kind": "order", "file": item["request_file"], "detail": item["order_confidence"]}
         for item in ordered if item["order_confidence"].startswith(("medium", "low"))
     ]
-    ambiguities.extend({"request_file": name, "reason": "corrupt"} for name in corrupt_requests)
+    ambiguities.extend({"kind": "corrupt-request", "file": name, "detail": None} for name in corrupt_requests)
     ambiguities.extend(
-        {"response_file": r["file"], "reason": "corrupt"} for r in response_files if r.get("corrupt")
+        {"kind": "corrupt-response", "file": r["file"], "detail": None}
+        for r in response_files if r.get("corrupt")
     )
 
     valid_responses = [r for r in response_files if not r.get("corrupt")]

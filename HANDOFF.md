@@ -1,59 +1,51 @@
 # 会话交接 (HANDOFF)
 
-> 日期:2026-07-05 · 分支:main(已与 origin 同步至 `c8afe80`)· 状态:**子项目一实现完成并推送**,待一次真实 run 验收
+> 日期:2026-07-06 · 分支:main · 状态:**子项目一已真实验收 + 契约收紧 pass 完成,契约已冻结**;下一步 = 子项目二(macOS app)brainstorming
 
 ## 快速恢复(下次 session 开场)
 
 读这两份即可恢复:
 1. 本文件(当前状态 + 下一步)
-2. `docs/superpowers/specs/2026-07-04-capture-service-and-data-contract-design.md`(设计 spec,契约仍以它为准)
+2. `docs/superpowers/specs/2026-07-04-capture-service-and-data-contract-design.md`(设计 spec + 冻结后的契约,Swift 端照它做 Codable)
 
-一句话开场:「继续 claude-context-lens:先做 claude-lens run 的一次性手动验收,然后视结果决定是做契约收紧 pass 还是开子项目二(macOS app)的 brainstorming」。
+一句话开场:「继续 claude-context-lens:子项目一已验收、契约已冻结,开子项目二(macOS 展示 app)的 brainstorming」。
 
 ## 1. 会话摘要
 
-用 subagent-driven 方式执行了 2026-07-04 计划的全部 8 个 Task:`claude_lens/` 包(contract/breakdown/linking/turns/ingest/launcher/cli)+ 打包 + 真实数据 smoke test 全部完成,每 Task 独立实现+独立审查。最终全分支审查发现计划自带的两个入口级 bug,经批准修复后推送——**子项目一「隔离启动器 + 收尾摄取 + 磁盘数据契约」交付**。
+对子项目一做了**真实 run 验收**(此前只有 ingest 路径的 smoke test),并完成 **Swift 动工前的契约收紧 pass**:确认了一个影响前提的硬限制(thinking 正文遥测层不可采集)、修掉旁路请求污染回合的问题、把契约收紧并同步进 spec 冻结。
 
 ## 2. 完成的工作
 
-- **9 个 commit 推送 origin/main**(`7964c0f`..`c8afe80`),25/25 测试过(`python3 -m unittest discover tests -v`):
-  - Task 1–7:七个模块各一 commit,TDD,代码与计划一致(Task 2 实现者曾擅自放宽 ANSI 正则,被任务审查抓回修正)
-  - Task 8:`pyproject.toml`(`claude-lens` console script)+ README 文档 + 真实数据 smoke test(`bodies-20260504-111512`:4 回合/21 请求,配对置信度 18 high:linked + 2 medium + 1 high:start,2 ambiguities,schema 校验零问题;控制者独立复跑确认)
-  - 修复 commit `c8afe80`(最终审查门槛,详见 §4)
-- 现在可用:`claude-lens run [claude 参数…]`(隔离采集+退出自动摄取)、`claude-lens ingest <raw-dir>`(补摄取历史采集)
+- **真实验收(spec §8)通过**:`claude-lens run -p "hi"` 实跑,真实 claude v2.1.201 **支持 `OTEL_LOG_RAW_API_BODIES`**;session.json 过 schema、raw↔breakdown↔session 引用对齐、counts 一致、无孤儿。多轮解析也证明:把 smoke 数据(`~/claude-otel/bodies-20260504-111512`,4→3 真实回合/21 请求)摄取后能逐回合重建对话。
+- **SIGINT 隐患实证排除**:Node 注册 SIGINT handler 会覆盖继承来的 SIG_IGN → 交互式 Ctrl-C 仍有效;父进程 ignore 是正确设计(保 ingest)。**HANDOFF 曾建议的「Popen 后再 SIG_IGN」改动不必做**。
+- **契约收紧 pass 完成(36/36 测试,真实数据端到端验证)**:
+  - **A1**:thinking/redacted_thinking 块标 `available:false`、清 base64 噪音(`breakdown.py`)
+  - **B1**:旁路请求(SUGGESTION MODE 等)分离进顶层 `sidechannel[]` + 每请求 `is_sidechannel` 标记,不再污染 `turns`(`turns.py`/`ingest.py`)——顺带救回一个被旁路挤掉的真实回合
+  - ambiguities 统一成 `{kind, file, detail}`(`linking.py`/`ingest.py`)
+  - 新增 `validate_breakdown` + 补全 `REQUIRED_*`(`launcher_argv`/`raw_response`/`usage`/`totals`/`user_message_preview`/`is_sidechannel`/`sidechannel`)(`contract.py`)
+  - `counts.sidechannel` 计数
+- **spec §5.1/§5.2 已更新到冻结后的契约**(含 thinking 硬约束、sidechannel、ambiguities kind)。
 
-## 3. 待完成的工作
+## 3. 关键发现 / 决策
 
-- **一次性手动验收(首要)**:真实跑 `claude-lens run -p "…"` + 一场含 Ctrl-C 的交互会话。验证两点:spec §8 验收命令在真实 claude 上通;**SIGINT 继承隐患**——launcher 在 spawn 前设 SIG_IGN,会跨 exec 被子进程继承,若 claude CLI 不自装 SIGINT handler 则 headless run 不可中断(稳妥模式 = Popen 后再 SIG_IGN → wait → restore)
-- **契约收紧 pass(Swift 动工前做完并冻结)**:补 `validate_breakdown`;`REQUIRED_*` 键集补全(`launcher_argv`/`raw_response`/`usage`/`totals`/`user_message_preview`);ambiguities 条目形状统一(加 `kind` 判别)
-- **已知限制(defer,有记录)**:重试/并行链会产生假 `high:linked` 配对(应检测同一响应配 2+ 请求→降级+记 ambiguity);`messages_count` 排序在 auto-compact 边界乱序(长会话必踩,建议改 previous_message_id 链式拓扑);breakdown 不解码 `thinking` 块(base64 signature 灌进 message_chars);turns.py 对 `content: null` 会 TypeError;`claude-lens --help` 不列 `run`
-- **子项目二**:macOS 展示 app(回合→请求两层浏览 + 相邻回合 diff),未设计,需另起 brainstorming → spec → plan;入口 = 各 session 的 `session.json`
+- **[硬限制] thinking 正文抓不到**:是 Claude Code 遥测层主动抹的(bundle 里 `uql()` 无条件把 `thinking→"<REDACTED>"`),请求历史侧+响应侧都抹,**无 env 开关**。API 本身返回完整 thinking → 唯一出路是「claude↔api.anthropic.com 之间架网络代理」(另一套架构,已决定**不做**,子项目一接受该限制并在契约显式标注)。**除 thinking 外,发给模型+模型生成的一切都完整可得**。
+- **旁路请求识别**:SUGGESTION MODE 与真实请求**同模型同 max_tokens**,metadata 也一样,只能靠注入文本 `[SUGGESTION MODE` 识别(`turns.SIDECHANNEL_MARKERS`,做成可扩展列表)。
+- **决策 A1 + B1**(用户拍板):thinking 接受硬限制+契约标注;旁路请求保留但标记分离,不丢数据。
 
-## 4. 关键决策(及理由)
+## 4. 重要文件
 
-- **执行方式 = subagent-driven**(用户选定):每 Task 新 subagent 实现 + 独立审查;审查两次抓到实质问题,证明有效
-- **直接在 main 上提交**、**Co-Authored-By 署名用 Claude Fable 5**(均用户明确批准,后者偏离计划原文)
-- **修复计划自带的 bug 而非照抄计划**(用户批准,spec 优先于 plan):
-  - `argparse.REMAINDER` 在子命令下吞不了带横杠参数 → `run` 在 argparse 前手动截取(`cli.main` 直接路由,支持 `run --` 转义)
-  - Ctrl-C 杀启动器跳过摄取 → `run_session` try/finally 保摄取 + 父进程暂 SIG_IGN + 返回 `(session_dir, returncode)` 传递退出码
-  - 损坏文件静默跳过违反 spec §7 → corrupt 请求/响应均记 ambiguities,corrupt 响应不计入 counts
-- **教训(写给未来的计划)**:launcher/CLI 入口必须用真实调用验证——8 轮任务级审查全没发现这两个 bug,因为单测只测了 ingest 路径
-- 复审撤销一项误报:session.json 的 `tool_chars` 合并是 spec §5.1 明文规定,非缺陷
+- `claude_lens/`(本次改 breakdown/contract/ingest/linking/turns)+ `tests/`(7 测试文件,36 用例) — 契约实现
+- `docs/superpowers/specs/2026-07-04-…-design.md` — **契约真相源(已冻结,Swift 照它做)**
+- `~/.claude-context-lens/sessions/20260706-135557` — 本次 live 验收产物(已用新代码重摄)
+- `~/claude-otel/bodies-20260504-111512` — 4 回合 smoke 数据(多轮验证用)
+- 跑法:`python3 -m claude_lens.cli run|ingest …`(未装为命令)
 
-## 5. 重要文件
+## 5. 待完成 / 下一步(按优先级)
 
-- `claude_lens/`(7 模块)+ `tests/`(7 测试文件,25 用例)+ `pyproject.toml` — 本次交付
-- `docs/superpowers/specs/2026-07-04-…-design.md` — 契约真相源(Swift app 照它做 Codable)
-- `docs/superpowers/plans/2026-07-04-…​.md` — 已执行完毕(注意其 cli/launcher 代码含已修复的 bug,勿再照抄)
-- `.superpowers/sdd/progress.md` — 完整执行台账(git-ignored,`git clean -fdx` 会删)
-- `README.md` — 新增 claude-lens 用法段;`~/.claude-context-lens/sessions/` — 默认数据根
-
-## 6. 下一步建议(按优先级)
-
-1. **手动验收**:`claude-lens run -p "hi"` + 交互会话含 Ctrl-C,确认摄取产物 + 可中断性(§3 第一条)
-2. 验收暴露问题则修(尤其 SIGINT 继承);无问题则做**契约收紧 pass** 并冻结契约
-3. 开**子项目二** brainstorming(macOS app:SwiftUI、两层浏览、相邻回合 diff 怎么呈现)
+1. **子项目二 brainstorming**:原生 macOS 展示 app(回合→请求两层浏览 + 相邻回合 diff + thinking/旁路的展示策略),未设计,需 brainstorming → spec → plan;数据入口 = 每 session 的 `session.json`。
+2. **已知限制(defer,有记录)**:重试/并行链造成假 `high:linked` 配对;`messages_count` 排序在 auto-compact 边界乱序(长会话必踩,建议改 previous_message_id 链式拓扑);turns.py 对 `content:null` 会 TypeError;`claude-lens --help` 不显示 `run`。
+3. **旁路识别可扩展**:目前只覆盖 SUGGESTION MODE(唯一有真实数据的类型),若发现标题生成等其他旁路类型,往 `SIDECHANNEL_MARKERS` 加标记。
 
 ## ⚠️ 未提交变更提醒
 
-工作区在写入本文件前**干净**;本 `HANDOFF.md` 更新是当前唯一未提交变更——**请提交它**(上一版内容已过时,称"实现未开始")。
+工作区干净(本次收紧改动已随本 HANDOFF + spec 更新一并提交)。

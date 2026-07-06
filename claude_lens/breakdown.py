@@ -3,6 +3,12 @@ import re
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
+# Claude Code's telemetry layer unconditionally scrubs thinking to "<REDACTED>"
+# (and redacted_thinking.data likewise). The content is never in the dump, so we
+# represent these blocks as empty + unavailable rather than leaking the base64
+# signature into char counts.
+THINKING_TYPES = {"thinking", "redacted_thinking"}
+
 CONFIG_KEYS = [
     "model", "max_tokens", "stream", "thinking", "betas",
     "context_management", "output_config", "metadata", "diagnostics",
@@ -17,6 +23,8 @@ def text_of(block):
     if isinstance(block, str):
         return clean_text(block)
     block_type = block.get("type")
+    if block_type in THINKING_TYPES:
+        return ""
     if block_type == "text":
         return block.get("text", "")
     if block_type == "tool_result":
@@ -35,6 +43,8 @@ def block_meta(block):
     if block.get("type") == "tool_result":
         meta["tool_use_id"] = block.get("tool_use_id")
         meta["is_error"] = block.get("is_error")
+    if block.get("type") in THINKING_TYPES:
+        meta["available"] = False
     return meta
 
 
@@ -74,10 +84,13 @@ def build_breakdown(request_body, response_body):
     response = None
     usage = None
     if response_body:
-        response = [
-            {"index": i, "type": b.get("type"), "chars": len(text_of(b)), "text": text_of(b)}
-            for i, b in enumerate(response_body.get("content", []))
-        ]
+        response = []
+        for i, b in enumerate(response_body.get("content", [])):
+            body = text_of(b)
+            entry = {"index": i, "type": b.get("type"), "chars": len(body), "text": body}
+            if b.get("type") in THINKING_TYPES:
+                entry["available"] = False
+            response.append(entry)
         usage = response_body.get("usage")
 
     totals = {
