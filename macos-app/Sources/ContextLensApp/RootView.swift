@@ -10,19 +10,27 @@ struct RootView: View {
         } content: {
             OutlineView()
         } detail: {
-            if let req = model.selectedRequest, let bd = model.breakdown(for: req) {
-                VStack(spacing: 0) {
-                    Picker("", selection: $model.mode) {
-                        ForEach(DetailMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                    }.pickerStyle(.segmented).labelsHidden().padding(8).frame(maxWidth: 240)
-                    Divider()
-                    switch model.mode {
-                    case .composition: CompositionView(breakdown: bd)
-                    case .diff: DiffView().environmentObject(model)
+            if let req = model.selectedRequest {
+                if let bd = model.breakdown(for: req) {
+                    VStack(spacing: 0) {
+                        Picker("", selection: $model.mode) {
+                            ForEach(DetailMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                        }.pickerStyle(.segmented).labelsHidden().padding(8).frame(maxWidth: 240)
+                        Divider()
+                        switch model.mode {
+                        case .composition: CompositionView(breakdown: bd)
+                        case .diff: DiffView().environmentObject(model)
+                        }
                     }
+                } else {
+                    ContentUnavailableView("无法加载 breakdown",
+                                           systemImage: "exclamationmark.triangle",
+                                           description: Text("派生文件缺失或损坏：\(req.breakdown)"))
                 }
             } else {
-                Text("Select a request").foregroundStyle(.secondary)
+                ContentUnavailableView("未选择请求",
+                                       systemImage: "sidebar.left",
+                                       description: Text("在左侧选择一个回合下的请求，查看它的 context window"))
             }
         }
         .toolbar {
