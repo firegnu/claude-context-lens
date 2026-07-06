@@ -26,6 +26,12 @@
 
 Dock 图标+菜单栏、confidence 按级别配色、每请求 ambiguity 徽标、breakdown 加载占位、L3 tool_use_id/is_error 显示、diff 轮/请求粒度切换+不变层不展开、程序化 app 图标(放大镜+橙蓝紫层带)、`.app` 打包脚本。全部 ff 合并进 main 并推送。
 
+## 下一步(下次会话开工)
+
+**给 app 加 Codex 支持** —— 让同一个 macOS app 也能浏览 Codex CLI 会话。评估已完成,**决定采用方案 A(解析 `~/.codex/sessions/rollout-*.jsonl`)**,否决方案 B(反向代理,安全风险不划算)。完整分析(含 B 的取舍、rollout 格式、契约映射、难度、已知限制、待验证未知)见:
+`docs/superpowers/specs/2026-07-06-codex-support-design.md`。
+Swift 侧预期**零改动**(契约解耦);主要工作 = 一个 Python rollout 解析器。下次:brainstorming → spec → plan → 实现。
+
 ## 待完成 / 已知
 
 1. **唯一没做的小尾巴**:diff 里"任意手动 A/B 挑两请求比"(已做轮/请求粒度切换,请求级=选中 vs 前一个;自由双选器留后续)。
