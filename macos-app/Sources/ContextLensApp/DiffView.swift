@@ -5,19 +5,35 @@ struct DiffView: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        if let pair = model.defaultComparePair,
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text("粒度").font(.caption).foregroundStyle(.secondary)
+                Picker("粒度", selection: $model.diffGranularity) {
+                    ForEach(DiffGranularity.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 140)
+                Spacer()
+            }.padding(8)
+            Divider()
+            content
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        if let pair = model.comparePair,
            let a = model.breakdown(for: pair.a), let b = model.breakdown(for: pair.b) {
             let d = DiffEngine.diff(a, b)
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("比较 req\(pair.a.index) → req\(pair.b.index)")
+                    Text("比较 req\(pair.a.index) → req\(pair.b.index)"
+                         + (model.diffGranularity == .turn ? "（相邻轮首请求）" : "（相邻请求）"))
                         .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
                     summary(d.summary)
                     ForEach(d.layers) { layer in LayerDiffRow(result: layer) }
                 }.padding()
             }
         } else {
-            Text("需要至少两轮才能比较").foregroundStyle(.secondary).padding()
+            Text(model.diffGranularity == .turn ? "需要至少两轮才能比较" : "需要至少两个请求才能比较")
+                .foregroundStyle(.secondary).padding()
         }
     }
 
@@ -41,23 +57,31 @@ struct LayerDiffRow: View {
     let result: DiffLayerResult
     @State private var open = false
     var body: some View {
-        DisclosureGroup(isExpanded: $open) {
-            ForEach(Array(result.added.enumerated()), id: \.offset) { _, blk in
-                blockLine("+", blk.label, blk.content, .green)
-            }
-            ForEach(Array(result.changed.enumerated()), id: \.offset) { _, pair in
-                ChangedBlock(before: pair.before, after: pair.after)
-            }
-            ForEach(Array(result.removed.enumerated()), id: \.offset) { _, blk in
-                blockLine("−", blk.label, blk.content, .red)
-            }
-        } label: {
-            HStack {
-                Text(layerTitle).bold()
-                Spacer()
-                Text(badge).font(.caption).foregroundStyle(result.hasChange ? .primary : .secondary)
+        Group {
+            if result.hasChange {
+                DisclosureGroup(isExpanded: $open) {
+                    ForEach(Array(result.added.enumerated()), id: \.offset) { _, blk in
+                        blockLine("+", blk.label, blk.content, .green)
+                    }
+                    ForEach(Array(result.changed.enumerated()), id: \.offset) { _, pair in
+                        ChangedBlock(before: pair.before, after: pair.after)
+                    }
+                    ForEach(Array(result.removed.enumerated()), id: \.offset) { _, blk in
+                        blockLine("−", blk.label, blk.content, .red)
+                    }
+                } label: { rowLabel }
+            } else {
+                rowLabel
             }
         }.padding(8).background(RoundedRectangle(cornerRadius: 7).stroke(.quaternary))
+    }
+
+    private var rowLabel: some View {
+        HStack {
+            Text(layerTitle).bold()
+            Spacer()
+            Text(badge).font(.caption).foregroundStyle(result.hasChange ? .primary : .secondary)
+        }
     }
 
     private var layerTitle: String {

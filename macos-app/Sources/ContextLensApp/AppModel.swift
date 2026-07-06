@@ -2,6 +2,7 @@ import Foundation
 import ContextLensCore
 
 enum DetailMode: String, CaseIterable { case composition = "构成", diff = "变化" }
+enum DiffGranularity: String, CaseIterable { case turn = "轮", request = "请求" }
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -9,6 +10,7 @@ final class AppModel: ObservableObject {
     @Published var selectedSessionID: String?
     @Published var selectedRequestID: String?
     @Published var mode: DetailMode = .composition
+    @Published var diffGranularity: DiffGranularity = .turn
     @Published private(set) var root: URL
     private var breakdownCache: [String: Breakdown] = [:]
 
@@ -68,5 +70,26 @@ final class AppModel: ObservableObject {
         let bTurn = turns[min(idx, turns.count - 2) + 1]
         guard let a = aTurn.requests.first, let b = bTurn.requests.first else { return nil }
         return (a, b)
+    }
+
+    /// The pair the diff view compares, per the current granularity.
+    var comparePair: (a: RequestRef, b: RequestRef)? {
+        switch diffGranularity {
+        case .turn: return defaultComparePair
+        case .request: return adjacentRequestPair
+        }
+    }
+
+    /// Request-level: the request before the selection vs the selection itself
+    /// (shows what this request added — e.g. within a tool loop).
+    var adjacentRequestPair: (a: RequestRef, b: RequestRef)? {
+        guard let s = selectedEntry?.session else { return nil }
+        let ordered = s.turns.flatMap(\.requests).sorted { $0.index < $1.index }
+        guard ordered.count >= 2 else { return nil }
+        if let selID = selectedRequestID,
+           let pos = ordered.firstIndex(where: { $0.id == selID }), pos > 0 {
+            return (ordered[pos - 1], ordered[pos])
+        }
+        return (ordered[0], ordered[1])
     }
 }
