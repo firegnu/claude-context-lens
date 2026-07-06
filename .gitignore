@@ -30,6 +30,9 @@ context_window_breakdown/
 session_request_order*/
 session_diffs*/
 
+# Superpowers scratch (sdd progress, brainstorm mockups)
+.superpowers/
+
 # Generated archives / scratch
 *.zip
 *.tar
