@@ -51,10 +51,16 @@ struct CompositionView: View {
                 Text("💭 思考内容不可采集").italic().foregroundStyle(.secondary)
             }
         } else {
-            FullTextRow(label: "\(m.role ?? "?")·\(m.type ?? "?")"
-                        + (m.toolName.map { " \($0)" } ?? ""),
-                        text: m.text, chars: m.chars)
+            FullTextRow(label: messageLabel(m), text: m.text, chars: m.chars)
         }
+    }
+
+    private func messageLabel(_ m: MessageBlock) -> String {
+        var parts = ["\(m.role ?? "?")·\(m.type ?? "?")"]
+        if let name = m.toolName { parts.append(name) }
+        if m.isError == true { parts.append("❌ error") }
+        if let id = m.toolUseId { parts.append("#\(id.suffix(8))") }
+        return parts.joined(separator: " ")
     }
 
     @ViewBuilder private func responseRow(_ r: ResponseBlock) -> some View {
