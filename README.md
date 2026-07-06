@@ -1,6 +1,48 @@
 # Claude Code Raw Body Analysis Toolkit
 
-这个目录里有四个脚本，用来采集并分析 Claude Code 通过 OTel raw body dump 记录下来的 request/response JSON。
+## 两段式系统（产品化形态）
+
+这套工具已产品化成**两段式系统**，靠磁盘契约解耦——各用最合适的语言，互不耦合：
+
+```text
+①  claude-lens (Python 采集)   →   ~/.claude-context-lens/sessions/   →   ②  macOS app (展示)
+   抓 OTel 遥测 body、按契约落盘        结构化 session 契约                 读契约、可视化浏览
+```
+
+- **① 采集端**：`claude_lens/` —— 带 OTel 采集启动 Claude Code，退出后自动 ingest 成契约。详见下方 [claude-lens](#claude-lens打包成-cli-的采集--contract-工具) 一节。
+- **② 展示端**：`macos-app/` —— 原生 SwiftUI 只读查看器，读上面落盘的契约。详见 [`macos-app/README.md`](macos-app/README.md)。
+
+### 快速上手（端到端）
+
+```bash
+# 1) 采集一次会话（OTel 环境只注入子进程，不影响日常 claude）
+python3 -m claude_lens.cli run -p "你的问题"
+#    或：对已有 raw dump 补跑契约化
+python3 -m claude_lens.cli ingest ~/claude-otel/bodies-YYYYMMDD-HHMMSS --session-id my-session
+
+# 2) 打开 macOS app 浏览（需 macOS 14+，无第三方依赖）
+cd macos-app && swift run ContextLensApp
+```
+
+app 里：左栏选 session → 中栏展开 **回合 → 请求** → 右栏「构成」看每个 req 的 context window 组成、「变化」看相邻轮 diff。
+
+**一个 req = 一次发给模型的完整 context window**（一个回合常含多个 req——工具循环里每次调用模型都是一个 req）。它由五层组成（app 右栏「构成」逐层可点开读全文）：
+
+| 层 | 是什么 | 归属 |
+|---|---|---|
+| **L1 Request config** | 请求设置/信封：model、max_tokens、thinking 配置、metadata、diagnostics | 参数 |
+| **L2 System prompt** | 系统指令：Claude Code agent 规则、CLAUDE.md、项目上下文 | ← 发给模型 |
+| **L3 Messages** | 对话历史：用户文本 / 助手文本 / tool_use(工具调用) / tool_result(工具结果) / thinking(占位) | ← 发给模型 |
+| **L4 Tools** | 工具定义：每个工具 name + description + JSON schema（常是最大的一层） | ← 发给模型 |
+| **L5 Response** | 模型这次的回复 | 模型返回 → |
+
+其中 **L2 + L3 + L4** 才是真正"发给模型、占 token 的 context window 内容"（预算条画的就是这三层的字符占比）；L1 是参数信封，L5 是输出。
+
+> ⚠️ **thinking 正文采集不到**：Claude Code 遥测层在写盘前无条件把 thinking 抹成 `<REDACTED>`，所以 L3/L5 的 thinking 块只显示占位「💭 思考内容不可采集」。除此之外，发给模型的一切（system / messages / tools）都完整可得。
+
+---
+
+下面（第 0–3 节 + `claude-lens` 节）是**采集端**的详细文档。这个目录里有四个脚本，用来采集并分析 Claude Code 通过 OTel raw body dump 记录下来的 request/response JSON。
 
 它们分别解决四个层级的问题：
 
@@ -631,6 +673,15 @@ python3 -m claude_lens.cli --help
 ```bash
 claude-lens run [传给 claude 的参数...]
 ```
+
+`run` 后面的参数原样透传给 `claude`，所以**采几轮由这些参数决定**：
+
+| 场景 | 命令 | 行为 |
+|---|---|---|
+| **单轮采样** | `claude-lens run -p "你的问题"` | headless 一问一答，答完自动退出 → 采到 **1 个回合** |
+| **多轮采样** | `claude-lens run`（不带 `-p`） | 起交互式 TUI，正常多轮对话，`/exit` 或 Ctrl-D 退出 → 采到**整段多轮会话** |
+
+（本质就是 `claude -p`(headless) 与 `claude`(交互) 的区别；退出后都会自动 ingest 成同一份 contract。）
 
 采集结果默认写到：
 

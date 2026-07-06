@@ -1,0 +1,126 @@
+{
+  "request_config": {
+    "model": "claude-sonnet-4-5",
+    "max_tokens": 8000,
+    "thinking": {
+      "type": "enabled",
+      "budget_tokens": 2000
+    },
+    "betas": [],
+    "context_management": null,
+    "output_config": null,
+    "metadata": {
+      "user_id": "synthetic-user"
+    },
+    "diagnostics": {
+      "previous_message_id": null
+    }
+  },
+  "system": [
+    {
+      "index": 0,
+      "type": "text",
+      "cache_control": null,
+      "chars": 24,
+      "text": "You are a helpful agent."
+    },
+    {
+      "index": 1,
+      "type": "text",
+      "cache_control": {
+        "type": "ephemeral"
+      },
+      "chars": 26,
+      "text": "Sample system instructions."
+    }
+  ],
+  "messages": [
+    {
+      "message_index": 0,
+      "content_index": 0,
+      "role": "user",
+      "type": "text",
+      "chars": 19,
+      "text": "sample question one"
+    },
+    {
+      "message_index": 1,
+      "content_index": 0,
+      "role": "assistant",
+      "type": "tool_use",
+      "chars": 0,
+      "text": "",
+      "tool_use_id": "toolu_synth_1",
+      "tool_name": "Read"
+    },
+    {
+      "message_index": 2,
+      "content_index": 0,
+      "role": "user",
+      "type": "tool_result",
+      "chars": 16,
+      "text": "sample tool out.",
+      "tool_use_id": "toolu_synth_1",
+      "is_error": false
+    }
+  ],
+  "tools": [
+    {
+      "index": 0,
+      "name": "Read",
+      "description": "Read a file.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "description_chars": 12,
+      "schema_chars": 48
+    },
+    {
+      "index": 1,
+      "name": "Bash",
+      "description": "Run a shell command.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "cmd": {
+            "type": "string"
+          }
+        }
+      },
+      "description_chars": 20,
+      "schema_chars": 48
+    }
+  ],
+  "response": [
+    {
+      "index": 0,
+      "type": "thinking",
+      "chars": 0,
+      "text": "",
+      "available": false
+    },
+    {
+      "index": 1,
+      "type": "text",
+      "chars": 12,
+      "text": "Hello there."
+    }
+  ],
+  "usage": {
+    "input_tokens": 100,
+    "cache_read_input_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "output_tokens": 10
+  },
+  "totals": {
+    "system_chars": 50,
+    "message_chars": 35,
+    "tool_description_chars": 32,
+    "tool_schema_chars": 96
+  }
+}

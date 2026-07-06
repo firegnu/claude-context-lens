@@ -1,0 +1,88 @@
+{
+  "session_id": "20200101-000000",
+  "captured_at": "2020-01-01T00:00:00+00:00",
+  "launcher_argv": [
+    "claude"
+  ],
+  "model": "claude-sonnet-4-5",
+  "counts": {
+    "turns": 2,
+    "requests": 3,
+    "responses": 3,
+    "sidechannel": 1
+  },
+  "turns": [
+    {
+      "index": 0,
+      "user_message_preview": "sample question one",
+      "requests": [
+        {
+          "index": 0,
+          "raw_request": "raw/r0.request.json",
+          "raw_response": "raw/r0.response.json",
+          "breakdown": "derived/req-000.breakdown.json",
+          "previous_message_id": null,
+          "order_confidence": "high:start",
+          "is_sidechannel": false,
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 10
+          },
+          "totals": {
+            "system_chars": 50,
+            "message_chars": 82,
+            "tool_chars": 96
+          }
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "user_message_preview": "sample question two",
+      "requests": [
+        {
+          "index": 1,
+          "raw_request": "raw/r1.request.json",
+          "raw_response": "raw/r1.response.json",
+          "breakdown": "derived/req-001.breakdown.json",
+          "previous_message_id": "msg_synth_0",
+          "order_confidence": "high:linked",
+          "is_sidechannel": false,
+          "usage": {
+            "input_tokens": 120,
+            "output_tokens": 15
+          },
+          "totals": {
+            "system_chars": 50,
+            "message_chars": 120,
+            "tool_chars": 96
+          }
+        }
+      ]
+    }
+  ],
+  "sidechannel": [
+    {
+      "index": 2,
+      "raw_request": "raw/s0.request.json",
+      "raw_response": null,
+      "breakdown": "derived/req-002.breakdown.json",
+      "previous_message_id": null,
+      "order_confidence": "medium:null-prev",
+      "is_sidechannel": true,
+      "usage": null,
+      "totals": {
+        "system_chars": 50,
+        "message_chars": 30,
+        "tool_chars": 96
+      }
+    }
+  ],
+  "ambiguities": [
+    {
+      "kind": "order",
+      "file": "s0.request.json",
+      "detail": "medium:null-prev"
+    }
+  ]
+}
