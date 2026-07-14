@@ -24,7 +24,10 @@ from claude_lens import codex_ingest  # noqa: E402
 # per-call decomposition (token_count), reasoning placeholder, tool call + output,
 # a compaction boundary, and a multi-agent signal.
 EVENTS = [
-    {"type": "session_meta", "payload": {"base_instructions": "You are Codex.", "session_id": "codex-fixture"}},
+    # Real Codex wraps base_instructions as {"text": ...}, not a bare string — the
+    # fixture must reflect that so the Swift decode test catches the dict case.
+    {"type": "session_meta", "payload": {"base_instructions": {"text": "You are Codex."},
+                                         "session_id": "codex-fixture"}},
     {"type": "turn_context", "payload": {"model": "gpt-5-codex", "effort": "high",
                                          "sandbox_policy": "workspace-write", "approval_policy": "on-request"}},
     {"type": "response_item", "payload": {"type": "message", "role": "developer",

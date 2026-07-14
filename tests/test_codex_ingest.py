@@ -372,6 +372,29 @@ class PerCallBreakdownTest(unittest.TestCase):
                 for req in turn["requests"]:
                     self.assertEqual(req["raw_request"], "")
 
+    def test_dict_base_instructions_extracted_and_all_text_is_string(self):
+        # Real Codex wraps base_instructions as {"text": ...}. The app's decoder
+        # types every layer's text as a String, so ingest must extract the text
+        # (not pass the dict through), and no layer's text may be a non-string.
+        with tempfile.TemporaryDirectory() as d:
+            rollout = Path(d) / "rollout-dict-base.jsonl"
+            _write_rollout(rollout, [
+                {"type": "session_meta", "payload": {
+                    "base_instructions": {"text": "wrapped base"}, "session_id": "sb"}},
+                {"type": "event_msg", "payload": {"type": "user_message", "message": "hi"}},
+                {"type": "event_msg", "payload": {"type": "agent_message", "message": "ok"}},
+                {"type": "event_msg", "payload": {"type": "token_count", "info": {}}},
+            ])
+            session = codex_ingest.ingest_codex_session(rollout, Path(d) / "out", captured_at="t")
+            bd = contract.read_json(Path(d) / "out" / session["turns"][0]["requests"][0]["breakdown"])
+            base = next(s for s in bd["system"] if s["type"] == "base_instructions")
+            self.assertEqual(base["text"], "wrapped base")   # extracted, not the {"text":...} dict
+            for layer in ("system", "messages"):
+                for entry in bd[layer]:
+                    self.assertIsInstance(entry["text"], str)
+            for entry in (bd["response"] or []):
+                self.assertIsInstance(entry["text"], str)
+
 
 class CompactionTest(unittest.TestCase):
     """Ticket 05: detect compaction, flag the boundary honestly, never replay

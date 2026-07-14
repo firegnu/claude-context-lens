@@ -43,17 +43,21 @@ def build_codex_breakdown(call):
     turn_context = call.get("turn_context") or {}
 
     system = []
-    base = call.get("base_instructions") or ""
+    base = _as_text(call.get("base_instructions"))
     if base:
         system.append({"index": len(system), "type": "base_instructions",
                        "chars": len(base), "text": base})
     for dev in call.get("developer_messages") or []:
+        dev = _as_text(dev)
         system.append({"index": len(system), "type": "developer",
                        "chars": len(dev), "text": dev})
 
     messages = []
 
     def _add_message(role, mtype, text, extra=None):
+        # Every layer's text must be a string — the app's decoder types it as one.
+        # Real rollouts sometimes wrap text in objects, so coerce defensively.
+        text = _as_text(text)
         entry = {"message_index": len(messages), "content_index": 0,
                  "role": role, "type": mtype, "chars": len(text), "text": text}
         if extra:
@@ -81,6 +85,7 @@ def build_codex_breakdown(call):
         response.append({"index": len(response), "type": "reasoning",
                          "available": False, "chars": 0, "text": ""})
     for agent in call.get("agent_messages") or []:
+        agent = _as_text(agent)
         response.append({"index": len(response), "type": "message",
                          "role": "assistant", "chars": len(agent), "text": agent})
     response = response or None

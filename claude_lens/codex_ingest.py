@@ -139,6 +139,15 @@ def _message_text(payload):
     return ""
 
 
+def _base_instructions_text(value):
+    """session_meta.base_instructions is a plain string (older Codex) or a
+    {"text": ...} wrapper (current Codex). Normalize to the instruction string so the
+    app's decoder (which types a system block's text as a String) can read it."""
+    if isinstance(value, dict):
+        value = value.get("text")
+    return value if isinstance(value, str) else ""
+
+
 def _new_call():
     return {"user_messages": [], "reasoning_count": 0, "agent_messages": [],
             "tool_calls": [], "tool_outputs": {}, "compaction_count": 0}
@@ -259,7 +268,7 @@ def ingest_codex_session(rollout_path, session_dir, captured_at):
     events, malformed_lines = _read_events(rollout_path)
 
     meta = _session_meta(events)
-    base_instructions = meta.get("base_instructions") or ""
+    base_instructions = _base_instructions_text(meta.get("base_instructions"))
     session_id = meta.get("session_id") or session_dir.name
 
     turns_raw = _segment_calls(events, base_instructions)
