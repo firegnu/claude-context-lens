@@ -7,7 +7,7 @@ from pathlib import Path
 from .contract import SESSIONS_ROOT
 from .ingest import ingest_session
 from .codex_ingest import (ingest_codex_session, discover_codex_rollouts,
-                           read_codex_session_index, CODEX_HOME)
+                           read_codex_session_index, sync_codex_sessions, CODEX_HOME)
 from .launcher import run_session
 
 
@@ -58,6 +58,13 @@ def _cmd_list_codex(args):
             print(f"  {entry.get('id')}  {entry.get('updated_at')}  {entry.get('thread_name')}")
 
 
+def _cmd_sync_codex(args):
+    stats = sync_codex_sessions(args.codex_dir, args.root, limit=args.limit)
+    print(f"Synced {stats['ingested']} new Codex session(s); "
+          f"skipped {stats['skipped_existing']} already in store, "
+          f"{stats['skipped_empty']} empty.")
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
 
@@ -88,6 +95,14 @@ def main(argv=None):
     list_codex_parser = sub.add_parser("list-codex", help="List/discover Codex sessions")
     list_codex_parser.add_argument("--codex-dir", type=Path, default=CODEX_HOME)
     list_codex_parser.set_defaults(func=_cmd_list_codex)
+
+    sync_codex_parser = sub.add_parser("sync-codex",
+                                       help="Ingest all new Codex rollouts into the store")
+    sync_codex_parser.add_argument("--codex-dir", type=Path, default=CODEX_HOME)
+    sync_codex_parser.add_argument("--root", type=Path, default=SESSIONS_ROOT)
+    sync_codex_parser.add_argument("--limit", type=int, default=None,
+                                   help="Cap how many new sessions to ingest (newest first)")
+    sync_codex_parser.set_defaults(func=_cmd_sync_codex)
 
     args = parser.parse_args(argv)
     return args.func(args)

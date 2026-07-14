@@ -12,10 +12,12 @@ agent+reasoning, with usage from token_count (see `_segment_calls` and
 `codex_breakdown`). Later tickets add compaction handling and multi-agent.
 """
 import json
+import shutil
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
-from .contract import write_json, validate_session
+from .contract import write_json, validate_session, SESSIONS_ROOT
 from .codex_breakdown import build_codex_breakdown
 
 CODEX_HOME = Path.home() / ".codex"
@@ -412,3 +414,37 @@ def read_codex_session_index(codex_dir=CODEX_HOME):
             if isinstance(entry, dict):
                 entries.append(entry)
     return entries
+
+
+def sync_codex_sessions(codex_dir=CODEX_HOME, root=SESSIONS_ROOT, captured_at=None, limit=None):
+    """Ingest every rollout under `codex_dir` that isn't already in the store.
+
+    Incremental: a rollout whose session dir (named after its stem, as ingest-codex
+    names it) already exists under `root` is skipped, so re-running only ingests
+    newly-appeared sessions. `limit` caps how many NEW sessions get ingested, taking
+    the newest first (rollout filenames sort chronologically) — handy for a first
+    run that would otherwise ingest the whole history. Returns
+    {"ingested": n, "skipped_existing": n, "skipped_empty": n}."""
+    root = Path(root)
+    captured_at = captured_at or datetime.now().astimezone().isoformat()
+    ingested = 0
+    skipped_existing = 0
+    skipped_empty = 0
+    for rollout in reversed(discover_codex_rollouts(codex_dir)):  # newest first
+        if limit is not None and ingested >= limit:
+            break
+        session_dir = root / rollout.stem
+        if session_dir.exists():
+            skipped_existing += 1
+            continue
+        session = ingest_codex_session(rollout, session_dir, captured_at=captured_at)
+        if session["counts"]["turns"] == 0:
+            # Empty (e.g. a multi-agent sub-session with no user turns) — don't leave
+            # it cluttering the store. Since nothing is kept, a later sync re-ingests
+            # and re-drops it (cheap, bounded by #empties); acceptable for v1.
+            shutil.rmtree(session_dir)
+            skipped_empty += 1
+            continue
+        ingested += 1
+    return {"ingested": ingested, "skipped_existing": skipped_existing,
+            "skipped_empty": skipped_empty}

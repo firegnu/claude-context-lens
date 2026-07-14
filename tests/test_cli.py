@@ -138,6 +138,88 @@ class CodexDiscoveryTest(unittest.TestCase):
             self.assertIn("proj", out)
 
 
+class SyncCodexTest(unittest.TestCase):
+    def _tree(self, d):
+        codex = Path(d) / ".codex"
+        _write_rollout(codex / "sessions" / "2026" / "06" / "13" / "rollout-a.jsonl",
+                       _minimal_rollout_events())
+        _write_rollout(codex / "sessions" / "2025" / "09" / "02" / "rollout-b.jsonl",
+                       _minimal_rollout_events())
+        return codex
+
+    def test_sync_ingests_new_and_skips_existing(self):
+        with tempfile.TemporaryDirectory() as d:
+            codex = self._tree(d)
+            store = Path(d) / "store"
+            ra = codex / "sessions" / "2026" / "06" / "13" / "rollout-a.jsonl"
+            cli.main(["ingest-codex", str(ra), "--root", str(store)])  # pre-ingest a
+            stats = codex_ingest.sync_codex_sessions(codex, store)
+            self.assertEqual(stats["ingested"], 1)          # b is new
+            self.assertEqual(stats["skipped_existing"], 1)  # a already in store
+            self.assertTrue((store / "rollout-a" / "session.json").exists())
+            self.assertTrue((store / "rollout-b" / "session.json").exists())
+
+    def test_sync_skips_empty_sessions(self):
+        # A rollout with no user_message -> 0 turns (a multi-agent sub-session).
+        # sync must not leave an empty session cluttering the store.
+        with tempfile.TemporaryDirectory() as d:
+            codex = Path(d) / ".codex"
+            _write_rollout(codex / "sessions" / "2026" / "01" / "01" / "rollout-empty.jsonl", [
+                {"type": "session_meta", "payload": {"session_id": "e"}},
+                {"type": "inter_agent_communication_metadata", "payload": {}},
+            ])
+            store = Path(d) / "store"
+            stats = codex_ingest.sync_codex_sessions(codex, store)
+            self.assertEqual(stats["ingested"], 0)
+            self.assertEqual(stats["skipped_empty"], 1)
+            self.assertFalse((store / "rollout-empty").exists())
+
+    def test_sync_codex_cli_command(self):
+        with tempfile.TemporaryDirectory() as d:
+            codex = self._tree(d)
+            store = Path(d) / "store"
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                cli.main(["sync-codex", "--codex-dir", str(codex), "--root", str(store)])
+            self.assertIn("2", buf.getvalue())  # 2 new sessions synced
+            self.assertTrue((store / "rollout-a" / "session.json").exists())
+            self.assertTrue((store / "rollout-b" / "session.json").exists())
+
+    def test_sync_limit_caps_new_ingests(self):
+        with tempfile.TemporaryDirectory() as d:
+            codex = self._tree(d)  # two rollouts available
+            store = Path(d) / "store"
+            stats = codex_ingest.sync_codex_sessions(codex, store, limit=1)
+            self.assertEqual(stats["ingested"], 1)  # capped at 1 despite 2 available
+
+    def test_sync_is_idempotent_across_runs(self):
+        with tempfile.TemporaryDirectory() as d:
+            codex = self._tree(d)  # 2 non-empty rollouts
+            _write_rollout(codex / "sessions" / "2026" / "01" / "01" / "rollout-empty.jsonl",
+                           [{"type": "session_meta", "payload": {"session_id": "e"}}])
+            store = Path(d) / "store"
+            first = codex_ingest.sync_codex_sessions(codex, store)
+            self.assertEqual((first["ingested"], first["skipped_empty"]), (2, 1))
+            # second run: the two are now in store -> skipped; the empty is re-dropped
+            second = codex_ingest.sync_codex_sessions(codex, store)
+            self.assertEqual(second["ingested"], 0)
+            self.assertEqual(second["skipped_existing"], 2)
+            self.assertEqual(second["skipped_empty"], 1)
+
+    def test_sync_limit_does_not_spend_budget_on_existing(self):
+        with tempfile.TemporaryDirectory() as d:
+            codex = self._tree(d)  # rollout-a (2026, newest) + rollout-b (2025)
+            store = Path(d) / "store"
+            ra = codex / "sessions" / "2026" / "06" / "13" / "rollout-a.jsonl"
+            cli.main(["ingest-codex", str(ra), "--root", str(store)])  # newest already in store
+            # limit=1: a is newest but already present -> skipped without eating the
+            # budget, so b (the one new session) is still ingested.
+            stats = codex_ingest.sync_codex_sessions(codex, store, limit=1)
+            self.assertEqual(stats["ingested"], 1)
+            self.assertEqual(stats["skipped_existing"], 1)
+            self.assertTrue((store / "rollout-b" / "session.json").exists())
+
+
 class CliRunArgsTest(unittest.TestCase):
     def test_run_passes_dash_prefixed_args_through(self):
         with patch("claude_lens.cli.run_session") as mock_run_session:
