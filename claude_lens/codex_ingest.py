@@ -11,34 +11,88 @@ that turn's response; one request (model call) per turn. Later tickets add real
 rollouts, richer turn segmentation, the full breakdown, compaction, and multi-agent.
 """
 import json
+from collections import Counter
 from pathlib import Path
 
 from .contract import write_json, validate_session
 from .codex_breakdown import build_codex_breakdown
 
+# Event kinds the current reconstruction actually consumes. Every other kind seen
+# in a rollout is counted as skipped (see _event_accounting) so real-rollout
+# surprises surface in the contract instead of being silently dropped. Later
+# tickets consume more kinds (usage, tool calls, compaction) and move them out.
+_CONSUMED_EVENT_KINDS = frozenset({
+    "session_meta",
+    "turn_context",
+    "event_msg.user_message",
+    "event_msg.agent_message",
+})
+
 
 def _read_events(rollout_path):
+    """Parse a rollout line-by-line into JSON objects, tolerating a hostile file.
+
+    Blank lines, unparseable lines, and lines that aren't JSON objects are skipped
+    and tallied rather than raised, so a single bad line can't abort the ingest.
+    Returns (events, malformed_lines)."""
     events = []
+    malformed = 0
     with Path(rollout_path).open("r", encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
             if not line:
                 continue
-            events.append(json.loads(line))
-    return events
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                malformed += 1
+                continue
+            if not isinstance(obj, dict):
+                malformed += 1
+                continue
+            events.append(obj)
+    return events, malformed
+
+
+def _payload(event):
+    payload = event.get("payload")
+    return payload if isinstance(payload, dict) else {}
+
+
+def _event_kind(event):
+    """A stable accounting key: the top-level type, refined by payload.type for the
+    envelope types (event_msg / response_item) whose meaning lives in the payload."""
+    etype = event.get("type")
+    if etype in ("event_msg", "response_item"):
+        ptype = _payload(event).get("type")
+        if ptype:
+            return f"{etype}.{ptype}"
+    return etype or "<untyped>"
+
+
+def _event_accounting(events, malformed_lines):
+    by_kind = Counter(_event_kind(event) for event in events)
+    skipped = {kind: count for kind, count in by_kind.items()
+               if kind not in _CONSUMED_EVENT_KINDS}
+    return {
+        "events_total": len(events),
+        "malformed_lines": malformed_lines,
+        "events_by_kind": dict(by_kind),
+        "skipped_kinds": dict(sorted(skipped.items(), key=lambda kv: (-kv[1], kv[0]))),
+    }
 
 
 def _session_meta(events):
     for event in events:
         if event.get("type") == "session_meta":
-            return event.get("payload", {}) or {}
+            return _payload(event)
     return {}
 
 
 def _first_model(events):
     for event in events:
         if event.get("type") == "turn_context":
-            model = (event.get("payload", {}) or {}).get("model")
+            model = _payload(event).get("model")
             if model:
                 return model
     return None
@@ -52,7 +106,7 @@ def _segment_turns(events):
     for event in events:
         if event.get("type") != "event_msg":
             continue
-        payload = event.get("payload", {}) or {}
+        payload = _payload(event)
         kind = payload.get("type")
         if kind == "user_message":
             if current is not None:
@@ -68,7 +122,7 @@ def _segment_turns(events):
 def ingest_codex_session(rollout_path, session_dir, captured_at):
     session_dir = Path(session_dir)
     derived = session_dir / "derived"
-    events = _read_events(rollout_path)
+    events, malformed_lines = _read_events(rollout_path)
 
     meta = _session_meta(events)
     base_instructions = meta.get("base_instructions") or ""
@@ -123,6 +177,9 @@ def ingest_codex_session(rollout_path, session_dir, captured_at):
         "turns": turns,
         "sidechannel": [],
         "ambiguities": [],
+        # Traceable ingest accounting: what was parsed vs. skipped. Additive and
+        # backward-compatible — the contract validator ignores extra keys.
+        "ingest": _event_accounting(events, malformed_lines),
     }
 
     problems = validate_session(session)
