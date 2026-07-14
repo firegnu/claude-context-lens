@@ -5,10 +5,11 @@ linear, ordered event stream. This module replays that stream and reconstructs a
 per-model-call view, then maps it into the SAME `session.json` / breakdown shape
 the Claude side produces, so the macOS app renders Codex sessions unchanged.
 
-Scope so far: session_meta -> base instructions; each `event_msg.user_message`
-starts a turn (see `_segment_turns` for why that source, not `response_item`);
-following `event_msg.agent_message`s are that turn's response; one request per turn.
-Later tickets add the full per-call breakdown, compaction, and multi-agent.
+Scope so far: `event_msg.user_message` starts a turn; each turn is decomposed into
+model calls delimited by `event_msg.token_count`; each call's five layers are filled
+from turn_context / base+developer / messages+tool-calls / (no tool schemas) /
+agent+reasoning, with usage from token_count (see `_segment_calls` and
+`codex_breakdown`). Later tickets add compaction handling and multi-agent.
 """
 import json
 from collections import Counter
@@ -19,13 +20,22 @@ from .codex_breakdown import build_codex_breakdown
 
 # Event kinds the current reconstruction actually consumes. Every other kind seen
 # in a rollout is counted as skipped (see _event_accounting) so real-rollout
-# surprises surface in the contract instead of being silently dropped. Later
-# tickets consume more kinds (usage, tool calls, compaction) and move them out.
+# surprises surface in the contract instead of being silently dropped. Keep this in
+# lockstep with what `_segment_calls` reads, or the accounting misreports consumed
+# kinds as skipped. `response_item.message` is intentionally NOT here: only its
+# developer-role variant is consumed (L2); role=user (injected context) and
+# role=assistant are not, so the kind stays flagged as not-fully-consumed.
 _CONSUMED_EVENT_KINDS = frozenset({
     "session_meta",
     "turn_context",
     "event_msg.user_message",
     "event_msg.agent_message",
+    "event_msg.token_count",
+    "response_item.reasoning",
+    "response_item.function_call",
+    "response_item.custom_tool_call",
+    "response_item.function_call_output",
+    "response_item.custom_tool_call_output",
 })
 
 
@@ -98,45 +108,115 @@ def _first_model(events):
     return None
 
 
-def _segment_turns(events):
-    """Segment the event stream into user turns.
+def _message_text(payload):
+    """Text of a response_item.message payload, whose content is [{text}] or a str."""
+    content = payload.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(part.get("text", "") for part in content
+                       if isinstance(part, dict))
+    return ""
 
-    Authoritative turn boundary = ``event_msg.user_message`` (ticket 03 decision).
-    A real rollout carries user turns in TWO places, with different counts:
 
-      * ``event_msg.user_message`` — the human-submitted-message event.
-      * ``response_item.message`` with role ``user`` — the user-role items in the
-        model's input, which ALSO include Codex-injected context blocks
-        (``<environment_context>``, ``<user_instructions>``, compaction fill-ins).
+def _new_call():
+    return {"user_messages": [], "reasoning_count": 0, "agent_messages": [],
+            "tool_calls": [], "tool_outputs": {}}
 
-    The second source consistently over-counts because of those injected blocks
-    (e.g. role=user ``response_item`` vs ``event_msg.user_message`` scanned 171 vs
-    135 in one real session; the ratio varies per session — see
-    research-rollout-format.md), so segmenting on it would invent spurious turns.
-    We segment on ``event_msg.user_message`` — one per actual human turn — and
-    deliberately ignore ``response_item`` here. The injected user-role content still
-    belongs in the breakdown layers (ticket 04), not as turn boundaries.
 
-    A user_message opens a turn; the ``agent_message`` events until the next
-    user_message are its response. One request (aggregate model activity) per turn;
-    per-model-call decomposition is ticket 04. Returns [{"user", "agent": [...]}].
+def _call_has_activity(call):
+    return bool(call["user_messages"] or call["reasoning_count"]
+                or call["agent_messages"] or call["tool_calls"])
+
+
+def _finalize_call(call, base_instructions, developer_messages, turn_context, usage):
+    """Turn accumulated per-call raw events into a `call` dict for build_codex_breakdown.
+    Tool calls are paired with their outputs by call_id."""
+    tool_calls = [{"name": tc["name"], "arguments": tc["arguments"], "call_id": tc["call_id"],
+                   "output": call["tool_outputs"].get(tc["call_id"])}
+                  for tc in call["tool_calls"]]
+    return {
+        "turn_context": dict(turn_context),
+        "base_instructions": base_instructions,
+        "developer_messages": list(developer_messages),
+        "user_messages": list(call["user_messages"]),
+        "tool_calls": tool_calls,
+        "agent_messages": list(call["agent_messages"]),
+        "reasoning_count": call["reasoning_count"],
+        "usage": usage,
+    }
+
+
+def _segment_calls(events, base_instructions):
+    """Segment the event stream into turns, each decomposed into model calls.
+
+    Turn boundary = ``event_msg.user_message`` (ticket 03 decision). A real rollout
+    also carries role=user ``response_item.message`` items, but those include
+    Codex-injected context (``<environment_context>``, ``<user_instructions>``,
+    compaction fill-ins) and consistently over-count (e.g. 171 vs 135 in one scanned
+    session; see research-rollout-format.md), so segmenting on them would invent
+    spurious turns. Injected content is context for the breakdown, not a turn start.
+
+    Call boundary = ``event_msg.token_count`` — Codex emits one usage record per
+    model response, so each token_count closes one model call (ticket 04). A turn's
+    trailing model activity with no closing token_count (e.g. the simplified
+    fixtures, or an aborted turn) is finalized as one call with usage=None, so a
+    token_count-less stream degrades to one aggregate call per turn.
+
+    Each call's L3 is that call's own activity (new user message, tool calls +
+    results, agent text), NOT a verbatim replay of the whole prior context: full
+    replay is unsafe until compaction windows are handled (ticket 05), so v1 keeps
+    an honest per-call/local view rather than an over-complete one.
+
+    Returns [{"user": str, "calls": [call_dict, ...]}].
     """
     turns = []
-    current = None
+    developer_messages = []
+    turn_context = {}
+    current_turn = None
+    call = _new_call()
+
+    def close_call(usage):
+        nonlocal call
+        if current_turn is not None and (_call_has_activity(call) or usage is not None):
+            current_turn["calls"].append(_finalize_call(
+                call, base_instructions, developer_messages, turn_context, usage))
+        call = _new_call()
+
     for event in events:
-        # response_item user-role messages are injected context, not turns (docstring).
-        if event.get("type") != "event_msg":
-            continue
+        etype = event.get("type")
         payload = _payload(event)
-        kind = payload.get("type")
-        if kind == "user_message":
-            if current is not None:
-                turns.append(current)
-            current = {"user": payload.get("message") or "", "agent": []}
-        elif kind == "agent_message" and current is not None:
-            current["agent"].append(payload.get("message") or "")
-    if current is not None:
-        turns.append(current)
+        if etype == "turn_context":
+            turn_context = payload
+        elif etype == "response_item":
+            ptype = payload.get("type")
+            if ptype == "message" and payload.get("role") == "developer":
+                developer_messages.append(_message_text(payload))
+            elif ptype == "reasoning":
+                call["reasoning_count"] += 1
+            elif ptype in ("function_call", "custom_tool_call"):
+                call["tool_calls"].append({
+                    "name": payload.get("name"),
+                    "arguments": payload.get("arguments", payload.get("input")),
+                    "call_id": payload.get("call_id")})
+            elif ptype in ("function_call_output", "custom_tool_call_output"):
+                call["tool_outputs"][payload.get("call_id")] = payload.get("output")
+        elif etype == "event_msg":
+            ptype = payload.get("type")
+            if ptype == "user_message":
+                close_call(None)          # close any in-flight call before the new turn
+                if current_turn is not None:
+                    turns.append(current_turn)
+                current_turn = {"user": payload.get("message") or "", "calls": []}
+                call["user_messages"].append(current_turn["user"])
+            elif ptype == "agent_message":
+                call["agent_messages"].append(payload.get("message") or "")
+            elif ptype == "token_count":
+                close_call(payload.get("info"))
+
+    close_call(None)                       # trailing activity in the last turn
+    if current_turn is not None:
+        turns.append(current_turn)
     return turns
 
 
@@ -149,43 +229,58 @@ def ingest_codex_session(rollout_path, session_dir, captured_at):
     base_instructions = meta.get("base_instructions") or ""
     session_id = meta.get("session_id") or session_dir.name
 
-    turns_raw = _segment_turns(events)
+    turns_raw = _segment_calls(events, base_instructions)
 
     turns = []
     requests_meta = []
     responses = 0
-    for index, turn in enumerate(turns_raw):
-        sent = [{"role": "user", "text": turn["user"]}]
-        response = [{"role": "assistant", "text": text} for text in turn["agent"]]
-        if response:
-            responses += 1
+    req_index = 0
+    for turn_index, turn in enumerate(turns_raw):
+        turn_requests = []
+        for call in turn["calls"]:
+            breakdown = build_codex_breakdown(call)
+            breakdown_name = f"req-{req_index:03d}.breakdown.json"
+            write_json(derived / breakdown_name, breakdown)
+            if breakdown["response"]:
+                responses += 1
 
-        breakdown = build_codex_breakdown(base_instructions, sent, response)
-        breakdown_name = f"req-{index:03d}.breakdown.json"
-        write_json(derived / breakdown_name, breakdown)
+            meta_entry = {
+                "index": req_index,
+                # Codex has no verbatim wire body — the breakdown is a reconstruction.
+                "raw_request": None,
+                "raw_response": None,
+                "breakdown": f"derived/{breakdown_name}",
+                # rollout is ordered, so ordering is authoritative, not inferred.
+                "order_confidence": "authoritative",
+                "is_sidechannel": False,
+                "usage": breakdown["usage"],
+                "totals": {
+                    "system_chars": breakdown["totals"]["system_chars"],
+                    "message_chars": breakdown["totals"]["message_chars"],
+                    "tool_chars": (breakdown["totals"]["tool_description_chars"]
+                                   + breakdown["totals"]["tool_schema_chars"]),
+                },
+            }
+            requests_meta.append(meta_entry)
+            turn_requests.append(meta_entry)
+            req_index += 1
 
-        meta_entry = {
-            "index": index,
-            # Codex has no verbatim wire body — the breakdown is a reconstruction.
-            "raw_request": None,
-            "raw_response": None,
-            "breakdown": f"derived/{breakdown_name}",
-            # rollout is ordered, so ordering is authoritative, not inferred.
-            "order_confidence": "authoritative",
-            "is_sidechannel": False,
-            "usage": breakdown["usage"],
-            "totals": {
-                "system_chars": breakdown["totals"]["system_chars"],
-                "message_chars": breakdown["totals"]["message_chars"],
-                "tool_chars": (breakdown["totals"]["tool_description_chars"]
-                               + breakdown["totals"]["tool_schema_chars"]),
-            },
-        }
-        requests_meta.append(meta_entry)
         turns.append({
-            "index": index,
+            "index": turn_index,
             "user_message_preview": turn["user"][:120].replace("\n", " "),
-            "requests": [meta_entry],
+            "requests": turn_requests,
+        })
+
+    # Honest surfacing of the reconstruction's fidelity gap (user story 18): each
+    # call's L3 is that call's own activity, not a verbatim replay of the full prior
+    # context. Full-context replay is unsafe until compaction is handled (ticket 05).
+    ambiguities = []
+    if requests_meta:
+        ambiguities.append({
+            "kind": "reconstruction", "file": None,
+            "detail": ("L3 messages are each model call's own activity (new user "
+                       "message, tool calls/results, agent text), not a verbatim "
+                       "replay of the full prior context."),
         })
 
     session = {
@@ -197,7 +292,7 @@ def ingest_codex_session(rollout_path, session_dir, captured_at):
                    "responses": responses, "sidechannel": 0},
         "turns": turns,
         "sidechannel": [],
-        "ambiguities": [],
+        "ambiguities": ambiguities,
         # Traceable ingest accounting: what was parsed vs. skipped. Additive and
         # backward-compatible — the contract validator ignores extra keys.
         "ingest": _event_accounting(events, malformed_lines),

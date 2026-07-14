@@ -1,61 +1,103 @@
 """Break a single reconstructed Codex model call into the five contract layers.
 
-Skeleton version (ticket 01): maps base instructions, the sent user messages,
-and the agent response into L2/L3/L5. L1 config, L4 tools, reasoning placeholders,
-and usage detail are filled out by later tickets (04). The output shape matches
-what `contract.validate_breakdown` requires, so the macOS app renders it unchanged.
+The output shape matches what `contract.validate_breakdown` requires (and mirrors
+the Claude-side `breakdown.py`), so the macOS app renders Codex calls unchanged.
+
+Codex/OpenAI field mapping (ticket 04):
+  L1 request_config <- turn_context (model / effort / sandbox_policy / ...)
+  L2 system         <- session_meta.base_instructions + developer-role messages
+  L3 messages       <- user messages + tool-call activity (name / arguments / output)
+  L4 tools          <- empty, flagged `tools_available: False` (rollouts carry no
+                       tool *schemas*; the tool *calls* still surface in L3)
+  L5 response       <- this call's agent message(s) + reasoning placeholders
+  usage             <- event_msg.token_count.info
+
+reasoning is server-side encrypted (like Claude's redacted thinking): represented
+as an unavailable placeholder with zero chars so the encrypted blob never inflates
+counts.
 """
+import json
+
+# turn_context fields surfaced as L1 config, in display order. turn_context carries
+# many more keys; these are the ones that describe how the call was configured.
+CODEX_CONFIG_KEYS = ["model", "effort", "sandbox_policy", "approval_policy",
+                     "collaboration_mode", "personality", "cwd"]
 
 
-def _message_entry(message_index, role, text):
-    return {
-        "message_index": message_index,
-        "content_index": 0,
-        "role": role,
-        "type": "message",
-        "chars": len(text),
-        "text": text,
-    }
+def _as_text(value):
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    return json.dumps(value, ensure_ascii=False)
 
 
-def build_codex_breakdown(base_instructions, sent_messages, response_messages):
-    """Assemble one call's five-layer breakdown.
+def build_codex_breakdown(call):
+    """Assemble one model call's five-layer breakdown from a reconstructed `call`.
 
-    - base_instructions: L2 system base text (from session_meta).
-    - sent_messages: list of {"role", "text"} that made up the request (L3).
-    - response_messages: list of {"role", "text"} the model returned (L5), or None.
-
-    L1 request_config and usage are empty here; ticket 04 fills them from
-    turn_context and event_msg.token_count.
+    `call` is a dict produced by the ingest decomposer with keys:
+      turn_context (dict), base_instructions (str), developer_messages (list[str]),
+      user_messages (list[str]), tool_calls (list[{name, arguments, output}]),
+      agent_messages (list[str]), reasoning_count (int), usage (dict|None).
     """
+    turn_context = call.get("turn_context") or {}
+
     system = []
-    if base_instructions:
-        system.append({"index": 0, "type": "base_instructions",
-                       "chars": len(base_instructions), "text": base_instructions})
+    base = call.get("base_instructions") or ""
+    if base:
+        system.append({"index": len(system), "type": "base_instructions",
+                       "chars": len(base), "text": base})
+    for dev in call.get("developer_messages") or []:
+        system.append({"index": len(system), "type": "developer",
+                       "chars": len(dev), "text": dev})
 
-    messages = [_message_entry(i, m["role"], m["text"])
-                for i, m in enumerate(sent_messages)]
+    messages = []
 
-    response = None
-    if response_messages:
-        response = [{"index": i, "type": "message", "role": m["role"],
-                     "chars": len(m["text"]), "text": m["text"]}
-                    for i, m in enumerate(response_messages)]
+    def _add_message(role, mtype, text, extra=None):
+        entry = {"message_index": len(messages), "content_index": 0,
+                 "role": role, "type": mtype, "chars": len(text), "text": text}
+        if extra:
+            entry.update(extra)
+        messages.append(entry)
 
-    tools = []
+    for user in call.get("user_messages") or []:
+        _add_message("user", "message", user)
+    for tc in call.get("tool_calls") or []:
+        args = _as_text(tc.get("arguments"))
+        _add_message("assistant", "tool_call", args,
+                     {"tool_name": tc.get("name"), "tool_use_id": tc.get("call_id")})
+        if tc.get("output") is not None:
+            out = _as_text(tc.get("output"))
+            _add_message("tool", "tool_result", out, {"tool_use_id": tc.get("call_id")})
+
+    response = []
+    for _ in range(call.get("reasoning_count") or 0):
+        # Encrypted server-side; content is unrecoverable, so zero chars + flag.
+        response.append({"index": len(response), "type": "reasoning",
+                         "available": False, "chars": 0, "text": ""})
+    for agent in call.get("agent_messages") or []:
+        response.append({"index": len(response), "type": "message",
+                         "role": "assistant", "chars": len(agent), "text": agent})
+    response = response or None
+
     totals = {
         "system_chars": sum(s["chars"] for s in system),
         "message_chars": sum(m["chars"] for m in messages),
+        # Tool *definitions* aren't in the rollout, so there are no tool chars.
         "tool_description_chars": 0,
         "tool_schema_chars": 0,
     }
 
     return {
-        "request_config": {},
+        "request_config": {k: turn_context[k] for k in CODEX_CONFIG_KEYS
+                           if k in turn_context},
         "system": system,
         "messages": messages,
-        "tools": tools,
+        "tools": [],
+        # Additive, backward-compatible flag: distinguishes "no tool schemas
+        # captured" from "no tools used". Tool calls still appear in L3.
+        "tools_available": False,
         "response": response,
-        "usage": None,
+        "usage": call.get("usage"),
         "totals": totals,
     }
