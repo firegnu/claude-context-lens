@@ -280,7 +280,10 @@ def ingest_codex_session(rollout_path, session_dir, captured_at):
             meta_entry = {
                 "index": req_index,
                 # Codex has no verbatim wire body — the breakdown is a reconstruction.
-                "raw_request": None,
+                # The app's contract decoder types raw_request as a (non-optional)
+                # string, so emit "" ("no raw body") rather than null; raw_response is
+                # contract-optional, so it stays null like a Claude request with none.
+                "raw_request": "",
                 "raw_response": None,
                 "breakdown": f"derived/{breakdown_name}",
                 # rollout is ordered, so ordering is authoritative, not inferred.

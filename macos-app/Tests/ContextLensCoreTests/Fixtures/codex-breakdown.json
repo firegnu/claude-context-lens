@@ -1,0 +1,81 @@
+{
+  "request_config": {
+    "model": "gpt-5-codex",
+    "effort": "high",
+    "sandbox_policy": "workspace-write",
+    "approval_policy": "on-request"
+  },
+  "system": [
+    {
+      "index": 0,
+      "type": "base_instructions",
+      "chars": 14,
+      "text": "You are Codex."
+    },
+    {
+      "index": 1,
+      "type": "developer",
+      "chars": 47,
+      "text": "<user_instructions>be terse</user_instructions>"
+    }
+  ],
+  "messages": [
+    {
+      "message_index": 0,
+      "content_index": 0,
+      "role": "user",
+      "type": "message",
+      "chars": 10,
+      "text": "add a test"
+    },
+    {
+      "message_index": 1,
+      "content_index": 0,
+      "role": "assistant",
+      "type": "tool_call",
+      "chars": 12,
+      "text": "{\"cmd\":\"ls\"}",
+      "tool_name": "shell",
+      "tool_use_id": "c1"
+    },
+    {
+      "message_index": 2,
+      "content_index": 0,
+      "role": "tool",
+      "type": "tool_result",
+      "chars": 7,
+      "text": "file.py",
+      "tool_use_id": "c1"
+    }
+  ],
+  "tools": [],
+  "tools_available": false,
+  "response": [
+    {
+      "index": 0,
+      "type": "reasoning",
+      "available": false,
+      "chars": 0,
+      "text": ""
+    },
+    {
+      "index": 1,
+      "type": "message",
+      "role": "assistant",
+      "chars": 6,
+      "text": "ran ls"
+    }
+  ],
+  "usage": {
+    "total_token_usage": {
+      "total_tokens": 1200
+    },
+    "model_context_window": 200000
+  },
+  "totals": {
+    "system_chars": 61,
+    "message_chars": 29,
+    "tool_description_chars": 0,
+    "tool_schema_chars": 0
+  }
+}

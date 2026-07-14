@@ -360,6 +360,18 @@ class PerCallBreakdownTest(unittest.TestCase):
             self.assertEqual(len(notes), 1)
             self.assertIn("not a verbatim", notes[0]["detail"])
 
+    def test_raw_request_is_empty_string_not_null(self):
+        # The macOS app's Codable decoder types raw_request as a NON-optional String;
+        # Codex has no verbatim wire body, but must emit "" (not null) or the app
+        # can't decode the session. This pins the cross-language contract value that
+        # the Swift decode test (macos-app) also guards, so reverting to None here
+        # fails fast in Python instead of only surfacing on fixture regeneration.
+        with tempfile.TemporaryDirectory() as d:
+            session, _ = self._breakdowns(d)
+            for turn in session["turns"]:
+                for req in turn["requests"]:
+                    self.assertEqual(req["raw_request"], "")
+
 
 class CompactionTest(unittest.TestCase):
     """Ticket 05: detect compaction, flag the boundary honestly, never replay

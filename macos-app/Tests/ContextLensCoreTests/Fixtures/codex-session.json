@@ -1,0 +1,98 @@
+{
+  "session_id": "codex-fixture",
+  "captured_at": "2026-01-01T00:00:00Z",
+  "launcher_argv": null,
+  "model": "gpt-5-codex",
+  "multi_agent": true,
+  "counts": {
+    "turns": 1,
+    "requests": 2,
+    "responses": 2,
+    "sidechannel": 0
+  },
+  "turns": [
+    {
+      "index": 0,
+      "user_message_preview": "add a test",
+      "requests": [
+        {
+          "index": 0,
+          "raw_request": "",
+          "raw_response": null,
+          "breakdown": "derived/req-000.breakdown.json",
+          "order_confidence": "authoritative",
+          "is_sidechannel": false,
+          "usage": {
+            "total_token_usage": {
+              "total_tokens": 1200
+            },
+            "model_context_window": 200000
+          },
+          "totals": {
+            "system_chars": 61,
+            "message_chars": 29,
+            "tool_chars": 0
+          }
+        },
+        {
+          "index": 1,
+          "raw_request": "",
+          "raw_response": null,
+          "breakdown": "derived/req-001.breakdown.json",
+          "order_confidence": "authoritative",
+          "is_sidechannel": false,
+          "usage": {
+            "total_token_usage": {
+              "total_tokens": 1500
+            },
+            "model_context_window": 200000
+          },
+          "totals": {
+            "system_chars": 61,
+            "message_chars": 0,
+            "tool_chars": 0
+          }
+        }
+      ]
+    }
+  ],
+  "sidechannel": [],
+  "ambiguities": [
+    {
+      "kind": "reconstruction",
+      "file": null,
+      "detail": "L3 messages are each model call's own activity (new user message, tool calls/results, agent text), not a verbatim replay of the full prior context."
+    },
+    {
+      "kind": "compaction",
+      "file": null,
+      "detail": "History was compacted 1 time(s); the boundary is flagged in each affected call's L3 and the pre-compaction history is not reconstructed."
+    },
+    {
+      "kind": "multi_agent",
+      "file": null,
+      "detail": "Multi-agent session (inter_agent_communication_metadata present). The per-call context is reconstructed as a single linear stream and does not attribute context to individual agents; treat cross-agent boundaries as unreliable."
+    }
+  ],
+  "ingest": {
+    "events_total": 15,
+    "malformed_lines": 0,
+    "events_by_kind": {
+      "session_meta": 1,
+      "turn_context": 1,
+      "response_item.message": 1,
+      "event_msg.user_message": 1,
+      "response_item.reasoning": 2,
+      "response_item.function_call": 1,
+      "response_item.function_call_output": 1,
+      "event_msg.agent_message": 2,
+      "event_msg.token_count": 2,
+      "compacted": 1,
+      "event_msg.context_compacted": 1,
+      "inter_agent_communication_metadata": 1
+    },
+    "skipped_kinds": {
+      "response_item.message": 1
+    }
+  }
+}

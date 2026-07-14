@@ -22,4 +22,20 @@ final class SessionDecodeTests: XCTestCase {
             XCTAssertFalse(amb.kind.isEmpty)
         }
     }
+
+    func testDecodesCodexSession() throws {
+        // Codex ingest produces the SAME contract as Claude, but a Codex request
+        // has no verbatim wire body (raw_request), and the session carries
+        // reconstruction / compaction / multi_agent ambiguity notes. The app must
+        // decode a Codex session, not choke on it.
+        let session = try JSONDecoder.contract.decode(Session.self, from: fixture("codex-session"))
+        XCTAssertFalse(session.turns.isEmpty)
+        XCTAssertEqual(session.counts.turns, session.turns.count)
+        // the requests decode even with no raw request body (the bug this locks)
+        XCTAssertFalse(session.turns.flatMap { $0.requests }.isEmpty)
+        // Codex fidelity notes survive into the contract the app reads
+        let kinds = Set(session.ambiguities.map(\.kind))
+        XCTAssertTrue(kinds.contains("multi_agent"))
+        XCTAssertTrue(kinds.contains("compaction"))
+    }
 }
