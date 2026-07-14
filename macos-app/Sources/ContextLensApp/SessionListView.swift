@@ -34,11 +34,13 @@ struct SessionListView: View {
     @ViewBuilder
     private func sourceBadge(_ entry: SessionEntry) -> some View {
         let codex = isCodex(entry)
+        // Codex = blue, Claude = its brand coral/orange (was grey, too faint).
+        let tint = codex ? Color.blue : Color(red: 0.82, green: 0.42, blue: 0.32)
         Text(codex ? "Codex" : "Claude")
             .font(.system(size: 9, weight: .semibold))
             .padding(.horizontal, 5).padding(.vertical, 1)
-            .background((codex ? Color.blue : Color.gray).opacity(0.22))
-            .foregroundStyle(codex ? Color.blue : Color.secondary)
+            .background(tint.opacity(0.22))
+            .foregroundStyle(tint)
             .clipShape(Capsule())
     }
 }
