@@ -60,6 +60,11 @@ def build_codex_breakdown(call):
             entry.update(extra)
         messages.append(entry)
 
+    # History was compacted upstream of this call. Flag the boundary honestly (zero
+    # chars, available:false) instead of replaying the pre-compaction history or
+    # pretending the reconstructed context is complete.
+    for _ in range(call.get("compaction_count") or 0):
+        _add_message("system", "compaction_boundary", "", {"available": False})
     for user in call.get("user_messages") or []:
         _add_message("user", "message", user)
     for tc in call.get("tool_calls") or []:

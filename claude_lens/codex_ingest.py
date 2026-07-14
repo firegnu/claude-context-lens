@@ -36,6 +36,8 @@ _CONSUMED_EVENT_KINDS = frozenset({
     "response_item.custom_tool_call",
     "response_item.function_call_output",
     "response_item.custom_tool_call_output",
+    "compacted",
+    "event_msg.context_compacted",
 })
 
 
@@ -121,10 +123,14 @@ def _message_text(payload):
 
 def _new_call():
     return {"user_messages": [], "reasoning_count": 0, "agent_messages": [],
-            "tool_calls": [], "tool_outputs": {}}
+            "tool_calls": [], "tool_outputs": {}, "compaction_count": 0}
 
 
 def _call_has_activity(call):
+    # A lone compaction boundary is NOT model activity: real rollouts always follow
+    # `compacted` with a token_count, so it attaches to that call. A trailing
+    # compaction with no following call (only in synthetic fixtures) is not promoted
+    # to a spurious request.
     return bool(call["user_messages"] or call["reasoning_count"]
                 or call["agent_messages"] or call["tool_calls"])
 
@@ -143,6 +149,7 @@ def _finalize_call(call, base_instructions, developer_messages, turn_context, us
         "tool_calls": tool_calls,
         "agent_messages": list(call["agent_messages"]),
         "reasoning_count": call["reasoning_count"],
+        "compaction_count": call["compaction_count"],
         "usage": usage,
     }
 
@@ -164,9 +171,11 @@ def _segment_calls(events, base_instructions):
     token_count-less stream degrades to one aggregate call per turn.
 
     Each call's L3 is that call's own activity (new user message, tool calls +
-    results, agent text), NOT a verbatim replay of the whole prior context: full
-    replay is unsafe until compaction windows are handled (ticket 05), so v1 keeps
-    an honest per-call/local view rather than an over-complete one.
+    results, agent text), NOT a verbatim replay of the whole prior context: history
+    is periodically compacted, so a full replay could be wrong. `compacted` events
+    are flagged as boundaries on the call they precede — their replacement_history is
+    never replayed (ticket 05 safe stance) — and v1 keeps an honest per-call/local
+    view rather than an over-complete one.
 
     Returns [{"user": str, "calls": [call_dict, ...]}].
     """
@@ -188,6 +197,12 @@ def _segment_calls(events, base_instructions):
         payload = _payload(event)
         if etype == "turn_context":
             turn_context = payload
+        elif etype == "compacted":
+            # History was compacted here; flag the boundary on the current call.
+            # replacement_history is deliberately NOT read — no pre-compaction replay
+            # (ticket 05 safe stance). context_compacted (event_msg) always pairs with
+            # this event, so it is not counted again.
+            call["compaction_count"] += 1
         elif etype == "response_item":
             ptype = payload.get("type")
             if ptype == "message" and payload.get("role") == "developer":
@@ -281,6 +296,16 @@ def ingest_codex_session(rollout_path, session_dir, captured_at):
             "detail": ("L3 messages are each model call's own activity (new user "
                        "message, tool calls/results, agent text), not a verbatim "
                        "replay of the full prior context."),
+        })
+    # Count compactions straight from the event stream, so the disclosure is
+    # authoritative even if a boundary marker had no call to attach to.
+    total_compactions = sum(1 for event in events if event.get("type") == "compacted")
+    if total_compactions:
+        ambiguities.append({
+            "kind": "compaction", "file": None,
+            "detail": (f"History was compacted {total_compactions} time(s); the "
+                       "boundary is flagged in each affected call's L3 and the "
+                       "pre-compaction history is not reconstructed."),
         })
 
     session = {

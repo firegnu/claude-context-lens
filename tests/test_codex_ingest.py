@@ -96,12 +96,12 @@ class IngestCodexSessionTest(unittest.TestCase):
             # Kinds not yet consumed by any reconstruction stay flagged.
             self.assertEqual(skipped["world_state"], 1)
             self.assertEqual(skipped["inter_agent_communication_metadata"], 1)
-            self.assertEqual(skipped["compacted"], 1)
-            # Consumed kinds are not reported as skipped — including the ones the
-            # ticket-04 per-call breakdown now consumes (usage + reasoning).
+            # Consumed kinds are not reported as skipped — including usage + reasoning
+            # (ticket 04) and compacted (ticket 05, flagged as a boundary).
             for consumed in ("session_meta", "turn_context",
                              "event_msg.user_message", "event_msg.agent_message",
-                             "event_msg.token_count", "response_item.reasoning"):
+                             "event_msg.token_count", "response_item.reasoning",
+                             "compacted"):
                 self.assertNotIn(consumed, skipped)
 
             # events_by_kind is the complete census — every well-formed event lands
@@ -360,6 +360,106 @@ class PerCallBreakdownTest(unittest.TestCase):
             notes = [a for a in session["ambiguities"] if a["kind"] == "reconstruction"]
             self.assertEqual(len(notes), 1)
             self.assertIn("not a verbatim", notes[0]["detail"])
+
+
+class CompactionTest(unittest.TestCase):
+    """Ticket 05: detect compaction, flag the boundary honestly, never replay
+    replacement_history (no full pre-compaction reconstruction in v1)."""
+
+    def _rollout_with_compaction(self, path):
+        _write_rollout(path, [
+            {"type": "session_meta", "payload": {
+                "base_instructions": "You are Codex.", "session_id": "s5"}},
+            {"type": "turn_context", "payload": {"model": "gpt-x"}},
+            {"type": "event_msg", "payload": {"type": "user_message", "message": "long task"}},
+            # --- call 1: no compaction ---
+            {"type": "response_item", "payload": {"type": "reasoning",
+                                                  "encrypted_content": "x", "summary": []}},
+            {"type": "event_msg", "payload": {"type": "agent_message", "message": "step 1"}},
+            {"type": "event_msg", "payload": {"type": "token_count", "info": {"a": 1}}},
+            # --- compaction happens here; replacement_history must NEVER be replayed ---
+            {"type": "compacted", "payload": {"message": "history summarized",
+                "replacement_history": [{"type": "message", "role": "user",
+                    "content": [{"type": "input_text", "text": "PRECOMPACTION_SECRET"}]}]}},
+            {"type": "event_msg", "payload": {"type": "context_compacted"}},
+            # --- call 2: sees the compaction boundary upstream ---
+            {"type": "response_item", "payload": {"type": "reasoning",
+                                                  "encrypted_content": "x", "summary": []}},
+            {"type": "event_msg", "payload": {"type": "agent_message", "message": "step 2"}},
+            {"type": "event_msg", "payload": {"type": "token_count", "info": {"a": 2}}},
+        ])
+
+    def _run(self, d):
+        rollout = Path(d) / "rollout-compact.jsonl"
+        self._rollout_with_compaction(rollout)
+        session_dir = Path(d) / "out"
+        session = codex_ingest.ingest_codex_session(rollout, session_dir, captured_at="t")
+        reqs = session["turns"][0]["requests"]
+        bds = [contract.read_json(session_dir / r["breakdown"]) for r in reqs]
+        return session, bds
+
+    def test_compaction_rollout_is_valid_with_two_calls(self):
+        with tempfile.TemporaryDirectory() as d:
+            session, bds = self._run(d)
+            self.assertEqual(contract.validate_session(session), [])
+            self.assertEqual(session["counts"]["requests"], 2)
+            for bd in bds:
+                self.assertEqual(contract.validate_breakdown(bd), [])
+
+    def test_compaction_boundary_flagged_on_the_call_after_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            _, bds = self._run(d)
+            # call 1 (before compaction) has no boundary marker
+            self.assertFalse(any(m["type"] == "compaction_boundary" for m in bds[0]["messages"]))
+            # call 2 (after compaction) carries an explicit boundary marker
+            markers = [m for m in bds[1]["messages"] if m["type"] == "compaction_boundary"]
+            self.assertEqual(len(markers), 1)
+            self.assertFalse(markers[0]["available"])
+            self.assertEqual(markers[0]["chars"], 0)
+
+    def test_replacement_history_is_never_replayed(self):
+        with tempfile.TemporaryDirectory() as d:
+            _, bds = self._run(d)
+            # the pre-compaction history text must appear nowhere in the reconstruction
+            for bd in bds:
+                for layer in ("system", "messages"):
+                    self.assertFalse(any("PRECOMPACTION_SECRET" in e["text"] for e in bd[layer]))
+                self.assertFalse(any("PRECOMPACTION_SECRET" in e["text"]
+                                     for e in (bd["response"] or [])))
+
+    def test_compaction_disclosed_in_session_and_counted_as_consumed(self):
+        with tempfile.TemporaryDirectory() as d:
+            session, _ = self._run(d)
+            comp = [a for a in session["ambiguities"] if a["kind"] == "compaction"]
+            self.assertEqual(len(comp), 1)
+            # both paired events are consumed, not misreported as skipped
+            skipped = session["ingest"]["skipped_kinds"]
+            self.assertNotIn("compacted", skipped)
+            self.assertNotIn("event_msg.context_compacted", skipped)
+
+    def test_trailing_lone_compaction_is_disclosed_not_dropped(self):
+        # A compacted event with no following model call must not vanish silently
+        # (ticket 05's core "never silently drop" invariant) nor become a spurious
+        # request. The session disclosure counts it from the event stream directly.
+        with tempfile.TemporaryDirectory() as d:
+            rollout = Path(d) / "rollout-trailing.jsonl"
+            _write_rollout(rollout, [
+                {"type": "session_meta", "payload": {"session_id": "s6"}},
+                {"type": "event_msg", "payload": {"type": "user_message", "message": "hi"}},
+                {"type": "event_msg", "payload": {"type": "agent_message", "message": "ok"}},
+                {"type": "event_msg", "payload": {"type": "token_count", "info": {}}},
+                # trailing compaction, nothing after it
+                {"type": "compacted", "payload": {"message": "x", "replacement_history": []}},
+            ])
+            session_dir = Path(d) / "out"
+            session = codex_ingest.ingest_codex_session(rollout, session_dir, captured_at="t")
+            self.assertEqual(contract.validate_session(session), [])
+            # one real model call, not a phantom request for the lone compaction
+            self.assertEqual(session["counts"]["requests"], 1)
+            # but the compaction is still disclosed at session scope
+            comp = [a for a in session["ambiguities"] if a["kind"] == "compaction"]
+            self.assertEqual(len(comp), 1)
+            self.assertIn("1 time", comp[0]["detail"])
 
 
 if __name__ == "__main__":
