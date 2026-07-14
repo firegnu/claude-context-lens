@@ -93,15 +93,14 @@ class IngestCodexSessionTest(unittest.TestCase):
             self.assertEqual(ingest["malformed_lines"], 2)
             self.assertEqual(ingest["events_total"], 9)  # 9 well-formed object events
             skipped = ingest["skipped_kinds"]
-            # Kinds not yet consumed by any reconstruction stay flagged.
+            # world_state is still consumed by nothing, so it stays flagged.
             self.assertEqual(skipped["world_state"], 1)
-            self.assertEqual(skipped["inter_agent_communication_metadata"], 1)
-            # Consumed kinds are not reported as skipped — including usage + reasoning
-            # (ticket 04) and compacted (ticket 05, flagged as a boundary).
+            # Consumed kinds are not reported as skipped — usage + reasoning (t04),
+            # compacted (t05, flagged boundary), inter_agent (t06, detection signal).
             for consumed in ("session_meta", "turn_context",
                              "event_msg.user_message", "event_msg.agent_message",
                              "event_msg.token_count", "response_item.reasoning",
-                             "compacted"):
+                             "compacted", "inter_agent_communication_metadata"):
                 self.assertNotIn(consumed, skipped)
 
             # events_by_kind is the complete census — every well-formed event lands
@@ -460,6 +459,62 @@ class CompactionTest(unittest.TestCase):
             comp = [a for a in session["ambiguities"] if a["kind"] == "compaction"]
             self.assertEqual(len(comp), 1)
             self.assertIn("1 time", comp[0]["detail"])
+
+
+class MultiAgentTest(unittest.TestCase):
+    """Ticket 06: multi-agent sessions are detected and flagged (not reconstructed).
+    Detection is on the inter_agent_communication_metadata EVENT — the
+    multi_agent_mode / collaboration_mode / multi_agent_version turn_context fields
+    are config defaults present in single-agent sessions too, so they would misflag
+    everything (verified across 200 real rollouts)."""
+
+    def test_multi_agent_flagged_on_inter_agent_event(self):
+        with tempfile.TemporaryDirectory() as d:
+            rollout = Path(d) / "rollout-ma.jsonl"
+            _write_rollout(rollout, [
+                {"type": "session_meta", "payload": {"session_id": "ma1"}},
+                {"type": "turn_context", "payload": {"model": "gpt-x"}},
+                {"type": "event_msg", "payload": {"type": "user_message", "message": "coordinate"}},
+                {"type": "inter_agent_communication_metadata",
+                 "payload": {"from": "agent-a", "to": "agent-b"}},
+                {"type": "event_msg", "payload": {"type": "agent_message", "message": "ok"}},
+                {"type": "event_msg", "payload": {"type": "token_count", "info": {}}},
+            ])
+            session = codex_ingest.ingest_codex_session(
+                rollout, Path(d) / "out", captured_at="t")
+            self.assertEqual(contract.validate_session(session), [])
+            self.assertTrue(session["multi_agent"])
+            notes = [a for a in session["ambiguities"] if a["kind"] == "multi_agent"]
+            self.assertEqual(len(notes), 1)
+            # detection is not skipped-swallowed
+            self.assertNotIn("inter_agent_communication_metadata",
+                             session["ingest"]["skipped_kinds"])
+
+    def test_single_agent_not_flagged_despite_multi_agent_config_fields(self):
+        # turn_context carries multi_agent_mode / collaboration_mode / version in
+        # single-agent sessions too (config defaults). Without an inter-agent event,
+        # this must NOT be flagged, and the reconstruction is unchanged.
+        with tempfile.TemporaryDirectory() as d:
+            rollout = Path(d) / "rollout-sa.jsonl"
+            _write_rollout(rollout, [
+                {"type": "session_meta", "payload": {
+                    "base_instructions": "You are Codex.", "session_id": "sa1"}},
+                {"type": "turn_context", "payload": {
+                    "model": "gpt-x", "multi_agent_mode": "explicitRequestOnly",
+                    "multi_agent_version": "v2",
+                    "collaboration_mode": {"mode": "default"}}},
+                {"type": "event_msg", "payload": {"type": "user_message", "message": "hi"}},
+                {"type": "event_msg", "payload": {"type": "agent_message", "message": "hello"}},
+                {"type": "event_msg", "payload": {"type": "token_count", "info": {}}},
+            ])
+            session = codex_ingest.ingest_codex_session(
+                rollout, Path(d) / "out", captured_at="t")
+            self.assertEqual(contract.validate_session(session), [])
+            self.assertFalse(session["multi_agent"])
+            self.assertFalse(any(a["kind"] == "multi_agent" for a in session["ambiguities"]))
+            # reconstruction unaffected
+            self.assertEqual(session["counts"]["turns"], 1)
+            self.assertEqual(session["counts"]["requests"], 1)
 
 
 if __name__ == "__main__":

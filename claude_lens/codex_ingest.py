@@ -18,13 +18,15 @@ from pathlib import Path
 from .contract import write_json, validate_session
 from .codex_breakdown import build_codex_breakdown
 
-# Event kinds the current reconstruction actually consumes. Every other kind seen
-# in a rollout is counted as skipped (see _event_accounting) so real-rollout
-# surprises surface in the contract instead of being silently dropped. Keep this in
-# lockstep with what `_segment_calls` reads, or the accounting misreports consumed
-# kinds as skipped. `response_item.message` is intentionally NOT here: only its
-# developer-role variant is consumed (L2); role=user (injected context) and
-# role=assistant are not, so the kind stays flagged as not-fully-consumed.
+# Event kinds the ingest actually consumes. Every other kind seen in a rollout is
+# counted as skipped (see _event_accounting) so real-rollout surprises surface in
+# the contract instead of being silently dropped. Keep this in lockstep with what
+# the reconstruction (`_segment_calls`) AND detection (`_is_multi_agent`) read —
+# e.g. `compacted` (boundary) and `inter_agent_communication_metadata` (multi-agent
+# signal) — or the accounting misreports consumed kinds as skipped.
+# `response_item.message` is intentionally NOT here: only its developer-role variant
+# is consumed (L2); role=user (injected context) and role=assistant are not, so the
+# kind stays flagged as not-fully-consumed.
 _CONSUMED_EVENT_KINDS = frozenset({
     "session_meta",
     "turn_context",
@@ -38,6 +40,7 @@ _CONSUMED_EVENT_KINDS = frozenset({
     "response_item.custom_tool_call_output",
     "compacted",
     "event_msg.context_compacted",
+    "inter_agent_communication_metadata",
 })
 
 
@@ -108,6 +111,19 @@ def _first_model(events):
             if model:
                 return model
     return None
+
+
+def _is_multi_agent(events):
+    """True only if the session actually ran multiple agents. The authoritative
+    signal is the `inter_agent_communication_metadata` event. The turn_context
+    `multi_agent_mode` / `collaboration_mode` / `multi_agent_version` fields are NOT
+    used: measured across 200 real rollouts they are config defaults present in
+    single-agent sessions too (multi_agent_mode="explicitRequestOnly",
+    collaboration_mode.mode="default", version="v1"/"v2"), so flagging on them would
+    misclassify every session. Only ~1 in 4 "v2" sessions ever emit an inter-agent
+    event — that event is what marks a real multi-agent run."""
+    return any(event.get("type") == "inter_agent_communication_metadata"
+               for event in events)
 
 
 def _message_text(payload):
@@ -308,11 +324,29 @@ def ingest_codex_session(rollout_path, session_dir, captured_at):
                        "pre-compaction history is not reconstructed."),
         })
 
+    # Multi-agent detection (ticket 06): single-agent path runs unchanged; a
+    # multi-agent session is flagged, not reconstructed as if one agent.
+    multi_agent = _is_multi_agent(events)
+    if multi_agent:
+        ambiguities.append({
+            "kind": "multi_agent", "file": None,
+            "detail": ("Multi-agent session (inter_agent_communication_metadata "
+                       "present). The per-call context is reconstructed as a single "
+                       "linear stream and does not attribute context to individual "
+                       "agents; treat cross-agent boundaries as unreliable."),
+        })
+
     session = {
         "session_id": session_id,
         "captured_at": captured_at,
         "launcher_argv": None,
         "model": _first_model(events),
+        # Codex-only additive flag: present on every Codex session (False for
+        # single-agent) so a consumer needn't infer it from absence. It is NOT added
+        # to the shared REQUIRED_SESSION_KEYS — that would break Claude sessions,
+        # which don't carry it. Contract-level visibility rides on the ambiguities
+        # note (a required key); this boolean is the convenient branch point.
+        "multi_agent": multi_agent,
         "counts": {"turns": len(turns), "requests": len(requests_meta),
                    "responses": responses, "sidechannel": 0},
         "turns": turns,
