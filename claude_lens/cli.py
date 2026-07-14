@@ -6,6 +6,8 @@ from pathlib import Path
 
 from .contract import SESSIONS_ROOT
 from .ingest import ingest_session
+from .codex_ingest import (ingest_codex_session, discover_codex_rollouts,
+                           read_codex_session_index, CODEX_HOME)
 from .launcher import run_session
 
 
@@ -35,6 +37,27 @@ def _cmd_ingest(args):
     print(f"Ingested into {session_dir}")
 
 
+def _cmd_ingest_codex(args):
+    # Default the session dir to the rollout's own name (already carries an ISO
+    # timestamp + uuid), so it reads clearly next to Claude sessions in the store.
+    session_id = args.session_id or args.rollout.stem
+    session_dir = Path(args.root) / session_id
+    ingest_codex_session(args.rollout, session_dir, captured_at=_now_iso())
+    print(f"Ingested Codex rollout into {session_dir}")
+
+
+def _cmd_list_codex(args):
+    rollouts = discover_codex_rollouts(args.codex_dir)
+    print(f"{len(rollouts)} Codex rollout(s) under {args.codex_dir}/sessions:")
+    for path in rollouts:
+        print(f"  {path}")
+    index = read_codex_session_index(args.codex_dir)
+    if index:
+        print(f"\nsession_index.jsonl ({len(index)} sessions):")
+        for entry in index:
+            print(f"  {entry.get('id')}  {entry.get('updated_at')}  {entry.get('thread_name')}")
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
 
@@ -55,6 +78,16 @@ def main(argv=None):
     ingest_parser.add_argument("--session-id", default=None)
     ingest_parser.add_argument("--root", type=Path, default=SESSIONS_ROOT)
     ingest_parser.set_defaults(func=_cmd_ingest)
+
+    ingest_codex_parser = sub.add_parser("ingest-codex", help="Ingest a Codex rollout jsonl")
+    ingest_codex_parser.add_argument("rollout", type=Path)
+    ingest_codex_parser.add_argument("--session-id", default=None)
+    ingest_codex_parser.add_argument("--root", type=Path, default=SESSIONS_ROOT)
+    ingest_codex_parser.set_defaults(func=_cmd_ingest_codex)
+
+    list_codex_parser = sub.add_parser("list-codex", help="List/discover Codex sessions")
+    list_codex_parser.add_argument("--codex-dir", type=Path, default=CODEX_HOME)
+    list_codex_parser.set_defaults(func=_cmd_list_codex)
 
     args = parser.parse_args(argv)
     return args.func(args)
