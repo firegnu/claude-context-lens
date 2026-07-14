@@ -18,6 +18,8 @@ from pathlib import Path
 from .contract import write_json, validate_session
 from .codex_breakdown import build_codex_breakdown
 
+CODEX_HOME = Path.home() / ".codex"
+
 # Event kinds the ingest actually consumes. Every other kind seen in a rollout is
 # counted as skipped (see _event_accounting) so real-rollout surprises surface in
 # the contract instead of being silently dropped. Keep this in lockstep with what
@@ -362,3 +364,34 @@ def ingest_codex_session(rollout_path, session_dir, captured_at):
         {"kind": "schema", "file": None, "detail": problem} for problem in problems)
     write_json(session_dir / "session.json", session)
     return session
+
+
+def discover_codex_rollouts(codex_dir=CODEX_HOME):
+    """Every rollout file under <codex_dir>/sessions, walking the date-nested layout
+    (YYYY/MM/DD/rollout-*.jsonl — there is no flat directory). Sorted by path, so the
+    ISO-timestamped filenames come out oldest-first."""
+    return sorted((Path(codex_dir) / "sessions").rglob("rollout-*.jsonl"))
+
+
+def read_codex_session_index(codex_dir=CODEX_HOME):
+    """Codex's own session index (<codex_dir>/session_index.jsonl), if present: a list
+    of {id, thread_name, updated_at}. Returns [] when absent — discovery does not
+    depend on it (it walks the directory tree), this just enriches listings."""
+    index = Path(codex_dir) / "session_index.jsonl"
+    if not index.exists():
+        return []
+    entries = []
+    with index.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            # Only dict rows are usable entries; skip a hostile non-object line
+            # rather than letting a later entry.get(...) blow up (cf. _read_events).
+            if isinstance(entry, dict):
+                entries.append(entry)
+    return entries
