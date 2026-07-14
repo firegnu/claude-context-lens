@@ -6,19 +6,23 @@
 
 ```text
 ①  claude-lens (Python 采集)   →   ~/.claude-context-lens/sessions/   →   ②  macOS app (展示)
-   抓 OTel 遥测 body、按契约落盘        结构化 session 契约                 读契约、可视化浏览
+   Claude OTel body / Codex rollout      结构化 session 契约                 读契约、可视化浏览
 ```
 
-- **① 采集端**：`claude_lens/` —— 带 OTel 采集启动 Claude Code，退出后自动 ingest 成契约。详见下方 [claude-lens](#claude-lens打包成-cli-的采集--contract-工具) 一节。
+- **① 采集端**：`claude_lens/` —— **两个来源、同一份契约**：
+  - **Claude Code**：带 OTel 采集启动，退出后自动 ingest（实时抓遥测 raw body）。
+  - **Codex CLI**：事后读 Codex 自己写的 rollout 日志（`~/.codex/sessions/**/rollout-*.jsonl`），转成同一契约——macOS app 零改动即可并排浏览，会话列表用蓝(Codex)/橙(Claude)徽章区分来源。
+  两个源详见下方 [claude-lens](#claude-lens打包成-cli-的采集--contract-工具) 一节。
 - **② 展示端**：`macos-app/` —— 原生 SwiftUI 只读查看器，读上面落盘的契约。详见 [`macos-app/README.md`](macos-app/README.md)。
 
 ### 快速上手（端到端）
 
 ```bash
-# 1) 采集一次会话（OTel 环境只注入子进程，不影响日常 claude）
+# 1) 采集会话（两个源都落进同一份契约 store）
+#  1a) Claude：OTel 环境只注入子进程，不影响日常 claude
 python3 -m claude_lens.cli run -p "你的问题"
-#    或：对已有 raw dump 补跑契约化
-python3 -m claude_lens.cli ingest ~/claude-otel/bodies-YYYYMMDD-HHMMSS --session-id my-session
+#  1b) Codex：同步 ~/.codex/sessions 里的 rollout（增量；首次可 --limit N 只灌最近的）
+python3 -m claude_lens.cli sync-codex --limit 20
 
 # 2) 打开 macOS app 浏览（需 macOS 14+，无第三方依赖）
 cd macos-app && swift run ContextLensApp
@@ -705,6 +709,26 @@ claude-lens ingest ~/claude-otel/bodies-YYYYMMDD-HHMMSS \
 
 `--session-id` 不传时默认用当前时间戳；`--root` 不传时默认 `~/.claude-context-lens/sessions`。
 
+### Codex 支持：`sync-codex` / `ingest-codex` / `list-codex`
+
+除了 Claude 侧的实时采集，`claude-lens` 也能读 **Codex CLI** 自己写的 rollout 日志（`~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl`），事后转成**同一份契约**——macOS app 一行不用改就能并排浏览 Codex 会话（列表里蓝/橙徽章区分来源）。
+
+```bash
+# 批量同步：扫 ~/.codex/sessions，把还没进 store 的 rollout 全部 ingest（增量）
+claude-lens sync-codex                 # 全量（首次较慢，1000+ 个会话）
+claude-lens sync-codex --limit 20      # 只灌最近 20 个（首次推荐）；重跑只处理新增的
+
+# 单个：吞一个指定 rollout
+claude-lens ingest-codex ~/.codex/sessions/2026/07/12/rollout-....jsonl
+
+# 列出/发现：遍历日期目录 + 读 ~/.codex/session_index.jsonl 的 thread_name
+claude-lens list-codex
+```
+
+`sync-codex` 靠「store 里有没有同名会话目录」做增量，重跑只 ingest 新出现的；空会话（0 回合，如 multi-agent 子会话）自动跳过。想无感自动可挂 cron。
+
+**已知限制**（契约里都如实标注，app 的 Ambiguities 区可见）：Codex 无逐字 wire body，每次调用的 context 是**从 rollout 重建**、非字节精确（L3 是该次调用的局部活动）；reasoning 服务端加密拿不到 → 占位 `available:false`（不计字符，同 Claude thinking）；工具 **schema** 不在 rollout（L4 空、标「不可得」），工具**调用**在 L3 可见；历史压缩如实标边界、不做完整重建；multi-agent 会话检测到即标记、不硬重建（单 agent 不受影响）。
+
 ### contract 目录结构
 
 ```text
@@ -722,7 +746,8 @@ claude-lens ingest ~/claude-otel/bodies-YYYYMMDD-HHMMSS \
 
 - `counts.turns` / `counts.requests` / `counts.responses`
 - `turns[]`：按 turn 切分后的 request 列表，每个 request 记录 `order_confidence`，并引用 `raw/` 和 `derived/` 里对应的文件
-- `ambiguities`：排序或 schema 校验中不确定的地方，含义与上面第 2 节的 `confidence` 一致（例如 `medium:null-prev`）
+- `ambiguities`：排序或 schema 校验中不确定的地方，含义与上面第 2 节的 `confidence` 一致（例如 `medium:null-prev`）；Codex 会话还在这里标注重建 / 压缩 / multi-agent 等保真度差距
+- `source`（Codex 专有，additive）：Codex 会话为 `"codex"`；Claude 会话不带此字段，app 据此显示蓝/橙来源徽章
 
 ## 运行测试
 
