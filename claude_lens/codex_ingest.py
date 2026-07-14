@@ -5,10 +5,10 @@ linear, ordered event stream. This module replays that stream and reconstructs a
 per-model-call view, then maps it into the SAME `session.json` / breakdown shape
 the Claude side produces, so the macOS app renders Codex sessions unchanged.
 
-Skeleton scope (ticket 01): session_meta -> base instructions; each
-`event_msg.user_message` starts a turn; following `event_msg.agent_message`s are
-that turn's response; one request (model call) per turn. Later tickets add real
-rollouts, richer turn segmentation, the full breakdown, compaction, and multi-agent.
+Scope so far: session_meta -> base instructions; each `event_msg.user_message`
+starts a turn (see `_segment_turns` for why that source, not `response_item`);
+following `event_msg.agent_message`s are that turn's response; one request per turn.
+Later tickets add the full per-call breakdown, compaction, and multi-agent.
 """
 import json
 from collections import Counter
@@ -99,11 +99,32 @@ def _first_model(events):
 
 
 def _segment_turns(events):
-    """Skeleton segmentation: a user_message opens a turn; agent_messages until the
-    next user_message are its response. Returns a list of {"user", "agent": [...]}."""
+    """Segment the event stream into user turns.
+
+    Authoritative turn boundary = ``event_msg.user_message`` (ticket 03 decision).
+    A real rollout carries user turns in TWO places, with different counts:
+
+      * ``event_msg.user_message`` — the human-submitted-message event.
+      * ``response_item.message`` with role ``user`` — the user-role items in the
+        model's input, which ALSO include Codex-injected context blocks
+        (``<environment_context>``, ``<user_instructions>``, compaction fill-ins).
+
+    The second source consistently over-counts because of those injected blocks
+    (e.g. role=user ``response_item`` vs ``event_msg.user_message`` scanned 171 vs
+    135 in one real session; the ratio varies per session — see
+    research-rollout-format.md), so segmenting on it would invent spurious turns.
+    We segment on ``event_msg.user_message`` — one per actual human turn — and
+    deliberately ignore ``response_item`` here. The injected user-role content still
+    belongs in the breakdown layers (ticket 04), not as turn boundaries.
+
+    A user_message opens a turn; the ``agent_message`` events until the next
+    user_message are its response. One request (aggregate model activity) per turn;
+    per-model-call decomposition is ticket 04. Returns [{"user", "agent": [...]}].
+    """
     turns = []
     current = None
     for event in events:
+        # response_item user-role messages are injected context, not turns (docstring).
         if event.get("type") != "event_msg":
             continue
         payload = _payload(event)

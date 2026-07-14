@@ -123,6 +123,84 @@ class IngestCodexSessionTest(unittest.TestCase):
             self.assertEqual(session["counts"]["requests"], 0)
             self.assertEqual(session["turns"], [])
 
+    def test_multi_turn_segmentation_groups_requests_by_user_message(self):
+        # A multi-turn stream: each event_msg.user_message opens a turn; the
+        # agent_messages that follow, until the next user_message, are that turn's
+        # response. Requests must land in the right turn, previews on the right turn.
+        with tempfile.TemporaryDirectory() as d:
+            rollout = Path(d) / "rollout-multi.jsonl"
+            _write_rollout(rollout, [
+                {"type": "session_meta",
+                 "payload": {"base_instructions": "You are Codex.", "session_id": "s2"}},
+                {"type": "turn_context", "payload": {"model": "gpt-x"}},
+                {"type": "event_msg", "payload": {"type": "user_message", "message": "first task"}},
+                {"type": "event_msg", "payload": {"type": "agent_message", "message": "working"}},
+                {"type": "event_msg", "payload": {"type": "agent_message", "message": "done first"}},
+                {"type": "event_msg", "payload": {"type": "user_message", "message": "second task"}},
+                {"type": "event_msg", "payload": {"type": "agent_message", "message": "done second"}},
+            ])
+            session_dir = Path(d) / "out"
+            session = codex_ingest.ingest_codex_session(
+                rollout, session_dir, captured_at="t")
+
+            self.assertEqual(contract.validate_session(session), [])
+            self.assertEqual(session["counts"]["turns"], 2)
+            self.assertEqual(session["counts"]["requests"], 2)
+
+            turn0, turn1 = session["turns"]
+            self.assertTrue(turn0["user_message_preview"].startswith("first task"))
+            self.assertTrue(turn1["user_message_preview"].startswith("second task"))
+            self.assertEqual(len(turn0["requests"]), 1)
+            self.assertEqual(len(turn1["requests"]), 1)
+
+            # Each turn's response holds only that turn's agent messages (grouping).
+            bd0 = contract.read_json(session_dir / turn0["requests"][0]["breakdown"])
+            bd1 = contract.read_json(session_dir / turn1["requests"][0]["breakdown"])
+            r0 = " ".join(r.get("text", "") for r in (bd0["response"] or []))
+            r1 = " ".join(r.get("text", "") for r in (bd1["response"] or []))
+            self.assertIn("working", r0)
+            self.assertIn("done first", r0)
+            self.assertNotIn("done second", r0)
+            self.assertIn("done second", r1)
+            self.assertNotIn("working", r1)
+
+    def test_user_turns_come_from_event_msg_not_injected_response_items(self):
+        # AC #3 lock: user turns are segmented on event_msg.user_message ONLY.
+        # Real rollouts also carry role=user response_item.message entries that are
+        # Codex-injected context (<environment_context>, <user_instructions>, ...),
+        # which outnumber the human turns. Those must NOT create extra turns.
+        with tempfile.TemporaryDirectory() as d:
+            rollout = Path(d) / "rollout-injected.jsonl"
+            _write_rollout(rollout, [
+                {"type": "session_meta",
+                 "payload": {"base_instructions": "You are Codex.", "session_id": "s3"}},
+                # injected user-role context item in the preamble -> not a turn
+                {"type": "response_item", "payload": {
+                    "type": "message", "role": "user",
+                    "content": [{"type": "input_text", "text": "<environment_context>cwd</environment_context>"}]}},
+                {"type": "event_msg", "payload": {"type": "user_message", "message": "real one"}},
+                # injected user-role item mid-turn -> not a turn
+                {"type": "response_item", "payload": {
+                    "type": "message", "role": "user",
+                    "content": [{"type": "input_text", "text": "<user_instructions>be terse</user_instructions>"}]}},
+                {"type": "event_msg", "payload": {"type": "agent_message", "message": "ok"}},
+                {"type": "event_msg", "payload": {"type": "user_message", "message": "real two"}},
+                {"type": "event_msg", "payload": {"type": "agent_message", "message": "ok2"}},
+            ])
+            session_dir = Path(d) / "out"
+            session = codex_ingest.ingest_codex_session(
+                rollout, session_dir, captured_at="t")
+
+            self.assertEqual(contract.validate_session(session), [])
+            # Two human turns, despite two extra role=user response_item.message items.
+            self.assertEqual(session["counts"]["turns"], 2)
+            previews = [t["user_message_preview"] for t in session["turns"]]
+            self.assertTrue(previews[0].startswith("real one"))
+            self.assertTrue(previews[1].startswith("real two"))
+            # Injected wrapper text never becomes a turn preview.
+            self.assertFalse(any("environment_context" in p for p in previews))
+            self.assertFalse(any("user_instructions" in p for p in previews))
+
 
 if __name__ == "__main__":
     unittest.main()
