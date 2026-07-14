@@ -353,6 +353,9 @@ def ingest_codex_session(rollout_path, session_dir, captured_at):
         })
 
     session = {
+        # Marks the ingest source so the app can label Codex vs Claude sessions.
+        # Additive/optional: Claude sessions omit it (the app treats absence as claude).
+        "source": "codex",
         "session_id": session_id,
         "captured_at": captured_at,
         "launcher_argv": None,

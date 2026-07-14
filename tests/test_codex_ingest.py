@@ -412,6 +412,13 @@ class PerCallBreakdownTest(unittest.TestCase):
             self.assertEqual(contract.validate_session(session), [])
             self.assertTrue(session["turns"][0]["user_message_preview"].startswith("hi wrapped"))
 
+    def test_session_tagged_with_source_codex(self):
+        # The app tells Codex from Claude sessions by this source marker; Claude
+        # sessions carry none, so the app treats absence as "claude".
+        with tempfile.TemporaryDirectory() as d:
+            session, _ = self._breakdowns(d)
+            self.assertEqual(session["source"], "codex")
+
 
 class CompactionTest(unittest.TestCase):
     """Ticket 05: detect compaction, flag the boundary honestly, never replay

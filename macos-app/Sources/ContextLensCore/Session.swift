@@ -13,6 +13,8 @@ public struct Session: Codable {
     public let capturedAt: String
     public let launcherArgv: [String]?
     public let model: String?
+    // "codex" for Codex-ingested sessions; nil for Claude (absence == Claude).
+    public let source: String?
     public let counts: Counts
     public let turns: [Turn]
     public let sidechannel: [RequestRef]

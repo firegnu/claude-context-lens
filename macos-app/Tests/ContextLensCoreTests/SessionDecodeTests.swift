@@ -38,4 +38,12 @@ final class SessionDecodeTests: XCTestCase {
         XCTAssertTrue(kinds.contains("multi_agent"))
         XCTAssertTrue(kinds.contains("compaction"))
     }
+
+    func testCodexSessionCarriesSourceMarker() throws {
+        let codex = try JSONDecoder.contract.decode(Session.self, from: fixture("codex-session"))
+        XCTAssertEqual(codex.source, "codex")
+        // Claude sessions have no source marker -> nil (the app treats absence as Claude)
+        let claude = try JSONDecoder.contract.decode(Session.self, from: fixture("session"))
+        XCTAssertNil(claude.source)
+    }
 }
