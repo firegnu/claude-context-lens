@@ -395,6 +395,23 @@ class PerCallBreakdownTest(unittest.TestCase):
             for entry in (bd["response"] or []):
                 self.assertIsInstance(entry["text"], str)
 
+    def test_object_wrapped_user_message_does_not_crash_ingest(self):
+        # Defense-in-depth, symmetric with base_instructions: user/agent messages are
+        # strings in every observed rollout, but an object-wrapped one must be coerced,
+        # not crash ingest on turn["user"][:120].
+        with tempfile.TemporaryDirectory() as d:
+            rollout = Path(d) / "rollout-wrapped.jsonl"
+            _write_rollout(rollout, [
+                {"type": "session_meta", "payload": {"session_id": "w"}},
+                {"type": "event_msg", "payload": {"type": "user_message",
+                                                  "message": {"text": "hi wrapped"}}},
+                {"type": "event_msg", "payload": {"type": "agent_message", "message": "ok"}},
+                {"type": "event_msg", "payload": {"type": "token_count", "info": {}}},
+            ])
+            session = codex_ingest.ingest_codex_session(rollout, Path(d) / "out", captured_at="t")
+            self.assertEqual(contract.validate_session(session), [])
+            self.assertTrue(session["turns"][0]["user_message_preview"].startswith("hi wrapped"))
+
 
 class CompactionTest(unittest.TestCase):
     """Ticket 05: detect compaction, flag the boundary honestly, never replay
